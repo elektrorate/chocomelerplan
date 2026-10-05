@@ -1,915 +1,302 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import { useTranslation } from 'react-i18next';
-import { Link } from 'react-router-dom';
-import { useWebSocketUpdates } from '../hooks/useWebSocketUpdates';
+import React, { useEffect, useRef, useState } from 'react';
+import { Check, Clock, History, RefreshCw, Scale } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
+import { useWebSocketUpdates } from '../hooks/useWebSocketUpdates';
 import { api } from '../lib/api';
-import { formatCurrency } from '../lib/utils';
-import {
-    PiggyBank, Star, Flame, Check, X, Hourglass, SlidersHorizontal,
-    Settings2, Coins, Target, Trophy, ListChecks,
-} from 'lucide-react';
-import { Card, CardContent, Button, Dialog, Input, Badge } from '../components/ui';
-import { format, parseISO } from 'date-fns';
-import { dateLocale } from '../i18n/format';
+import { IS_FIREBASE } from '../lib/firebase/config';
+import { penaltyDeadline } from '../lib/penalties';
+import type { Penalty, PenaltyProposal, PenaltySummary } from '../lib/penalties';
+import { Badge, Button, Card, CardContent, Dialog, Textarea } from '../components/ui';
 
-interface RewardMember {
-    id: string;
-    name: string;
-    color: string;
-    role: string;
-    linked_user_id?: string | null;
-    balance: number;
-    currency_value: number;
-    pending_count: number;
-    streak: number;
-    has_activity: boolean;
-}
+const euros = new Intl.NumberFormat('es-ES', { style: 'currency', currency: 'EUR' });
+const dates = new Intl.DateTimeFormat('es-ES', { dateStyle: 'medium', timeStyle: 'short' });
 
-interface RewardGoal {
-    id: string;
-    member_id: string;
-    title: string;
-    emoji?: string | null;
-    target_amount: number;
-    status: 'active' | 'achieved' | 'archived';
-    created_at: string;
-    achieved_at?: string | null;
-}
-
-interface KidTask {
-    id: string;
-    title: string;
-    points: number;
-    is_completed: boolean;
-    pending_approval: boolean;
-    assigned_to: string[];
-}
-
-interface PendingTask {
-    id: string;
-    title: string;
-    points: number;
-    assigned_to_members: Array<{ id: string; name: string; color: string }>;
-}
-
-interface RewardsSummary {
-    points_value: number;
-    currency: string;
-    members: RewardMember[];
-    pending_tasks: PendingTask[];
-}
-
-interface RewardTransaction {
-    id: string;
-    member_id: string;
-    task_id?: string | null;
-    points: number;
-    type: 'earn' | 'adjust' | 'redeem';
-    note?: string | null;
-    created_at: string;
-}
-
-const txIcon = (type: RewardTransaction['type']) => {
-    switch (type) {
-        case 'earn':
-            return <Star className="h-4 w-4 text-amber-500 fill-current" />;
-        case 'redeem':
-            return <PiggyBank className="h-4 w-4 text-pink-500" />;
-        default:
-            return <SlidersHorizontal className="h-4 w-4 text-primary" />;
-    }
-};
-
-// Dependency-free CSS confetti, shown when a goal reaches 100% in the kid view.
-const CONFETTI_COLORS = ['#F59E0B', '#EC4899', '#3B82F6', '#22C55E', '#A855F7', '#EF4444'];
-
-const Confetti: React.FC = () => (
-    <div className="pointer-events-none absolute inset-0 overflow-hidden" aria-hidden="true">
-        <style>{`@keyframes of-confetti-fall {
-            0% { transform: translateY(-24px) rotate(0deg); opacity: 1; }
-            100% { transform: translateY(460px) rotate(720deg); opacity: 0; }
-        }`}</style>
-        {Array.from({ length: 24 }).map((_, i) => (
-            <span
-                key={i}
-                style={{
-                    position: 'absolute',
-                    top: '-16px',
-                    left: `${(i * 41 + 7) % 100}%`,
-                    width: i % 3 === 0 ? 10 : 7,
-                    height: i % 2 === 0 ? 12 : 8,
-                    backgroundColor: CONFETTI_COLORS[i % CONFETTI_COLORS.length],
-                    borderRadius: i % 2 === 0 ? '9999px' : '2px',
-                    animation: `of-confetti-fall ${2.4 + (i % 5) * 0.5}s linear ${(i % 7) * 0.35}s infinite`,
-                }}
-            />
-        ))}
-    </div>
-);
+type PenaltyAction =
+    | { kind: 'pending' | 'forgiven'; entry: PenaltyProposal }
+    | { kind: 'pay'; entry: Penalty };
 
 const Rewards: React.FC = () => {
-    const { t } = useTranslation(['rewards', 'common']);
     const { user } = useAuth();
-    const isParent = Boolean(user?.is_owner) || user?.role !== 'enfant';
-
-    const [summary, setSummary] = useState<RewardsSummary | null>(null);
-    const [transactions, setTransactions] = useState<RewardTransaction[]>([]);
-    const [goals, setGoals] = useState<RewardGoal[]>([]);
-    const [kidTasks, setKidTasks] = useState<KidTask[]>([]);
+    const isAdult = Boolean(user && (user.is_owner || user.role !== 'enfant'));
+    const [summary, setSummary] = useState<(PenaltySummary & { truncated?: boolean }) | null>(null);
     const [loading, setLoading] = useState(true);
-    const [error, setError] = useState('');
+    const [refreshing, setRefreshing] = useState(false);
+    const [loadError, setLoadError] = useState('');
+    const [actionError, setActionError] = useState('');
+    const [action, setAction] = useState<PenaltyAction | null>(null);
+    const [reason, setReason] = useState('');
+    const [saving, setSaving] = useState(false);
+    const mounted = useRef(false);
+    const requestId = useRef(0);
+    const submitting = useRef(false);
+    const error = actionError || loadError;
 
-    // Dialogs
-    const [adjustMember, setAdjustMember] = useState<RewardMember | null>(null);
-    const [adjustPoints, setAdjustPoints] = useState('');
-    const [adjustNote, setAdjustNote] = useState('');
-    const [redeemMember, setRedeemMember] = useState<RewardMember | null>(null);
-    const [redeemPoints, setRedeemPoints] = useState('');
-    const [redeemNote, setRedeemNote] = useState('');
-    const [settingsOpen, setSettingsOpen] = useState(false);
-    const [settingsValue, setSettingsValue] = useState('');
-    const [goalMember, setGoalMember] = useState<RewardMember | null>(null);
-    const [editingGoal, setEditingGoal] = useState<RewardGoal | null>(null);
-    const [goalTitle, setGoalTitle] = useState('');
-    const [goalEmoji, setGoalEmoji] = useState('');
-    const [goalTarget, setGoalTarget] = useState('');
-
-    const load = async () => {
+    const load = async (afterMutation = false, detect = false) => {
+        if (!mounted.current || (submitting.current && !afterMutation)) return;
+        const id = ++requestId.current;
+        setRefreshing(true);
         try {
-            const [summaryRes, txRes, goalsRes] = await Promise.all([
-                api.get<{ success: boolean; data: RewardsSummary }>('/api/rewards/summary'),
-                api.get<{ success: boolean; data: RewardTransaction[] }>('/api/rewards/transactions'),
-                api.get<{ success: boolean; data: RewardGoal[] }>('/api/rewards/goals'),
-            ]);
-            if (summaryRes.success) setSummary(summaryRes.data);
-            if (txRes.success) setTransactions(txRes.data);
-            if (goalsRes.success) setGoals(goalsRes.data);
-            // Kid view only: the child's own task list (read-only).
-            if (!isParent) {
-                const tasksRes = await api.get<{ success: boolean; data: KidTask[] }>('/api/tasks');
-                if (tasksRes.success) setKidTasks(tasksRes.data);
+            const response = IS_FIREBASE && isAdult && detect
+                ? await api.post<{ success: true; data: PenaltySummary & { truncated?: boolean } }>('/api/penalties/detect', {})
+                : await api.get<{ success: true; data: PenaltySummary & { truncated?: boolean } }>('/api/penalties');
+            if (!mounted.current || id !== requestId.current) return;
+            // Copy API snapshots: demo responses can share objects with their store.
+            setSummary({
+                truncated: response.data.truncated,
+                review: response.data.review.map(entry => ({ ...entry })),
+                pending: response.data.pending.map(entry => ({ ...entry })),
+                history: response.data.history.map(entry => ({ ...entry })),
+                totals: response.data.totals.map(member => ({ ...member })),
+            });
+            setLoadError('');
+        } catch (err) {
+            if (mounted.current && id === requestId.current) {
+                setLoadError(err instanceof Error ? err.message : 'No se pudieron cargar las penalidades.');
             }
-        } catch (error) {
-            console.error('Failed to load rewards:', error);
-            setError(error instanceof Error ? error.message : t('rewards:errors.load'));
         } finally {
-            setLoading(false);
-        }
-    };
-
-    useEffect(() => { void load(); }, []);
-    useWebSocketUpdates('rewards', () => void load());
-    useWebSocketUpdates('tasks', () => void load());
-
-    const currency = summary?.currency || user?.currency || 'EUR';
-    const pointsValue = summary?.points_value ?? 0.1;
-
-    // Show every member with reward activity, plus all children (the target
-    // audience — they appear even before their first chore).
-    const visibleMembers = useMemo(
-        () => (summary?.members || []).filter(
-            (m) => m.has_activity || m.pending_count > 0 || m.balance !== 0 || m.role === 'Enfant'
-        ),
-        [summary]
-    );
-
-    const txByMember = useMemo(() => {
-        const map = new Map<string, RewardTransaction[]>();
-        for (const tx of transactions) {
-            if (!map.has(tx.member_id)) map.set(tx.member_id, []);
-            map.get(tx.member_id)!.push(tx);
-        }
-        return map;
-    }, [transactions]);
-
-    // One active goal per member (enforced server-side).
-    const activeGoalByMember = useMemo(() => {
-        const map = new Map<string, RewardGoal>();
-        for (const goal of goals) {
-            if (goal.status === 'active' && !map.has(goal.member_id)) map.set(goal.member_id, goal);
-        }
-        return map;
-    }, [goals]);
-
-    // Progress is computed client-side: balance × point value vs target amount.
-    const goalPercent = (member: RewardMember, goal: RewardGoal) =>
-        goal.target_amount > 0
-            ? Math.min(100, Math.round((member.currency_value / goal.target_amount) * 100))
-            : 0;
-    const goalReached = (member: RewardMember, goal: RewardGoal) =>
-        member.currency_value >= goal.target_amount;
-
-    const handleApprove = async (taskId: string) => {
-        try {
-            await api.post(`/api/tasks/${taskId}/approve`, {});
-            void load();
-        } catch (error) {
-            console.error('Failed to approve task:', error);
-            setError(error instanceof Error ? error.message : t('rewards:errors.action'));
-        }
-    };
-
-    const handleReject = async (taskId: string) => {
-        try {
-            await api.post(`/api/tasks/${taskId}/reject`, {});
-            void load();
-        } catch (error) {
-            console.error('Failed to reject task:', error);
-            setError(error instanceof Error ? error.message : t('rewards:errors.action'));
-        }
-    };
-
-    const handleAdjust = async (e: React.FormEvent) => {
-        e.preventDefault();
-        if (!adjustMember) return;
-        setError('');
-        try {
-            await api.post('/api/rewards/adjust', {
-                member_id: adjustMember.id,
-                points: parseInt(adjustPoints, 10) || 0,
-                note: adjustNote,
-            });
-            setAdjustMember(null);
-            void load();
-        } catch (error) {
-            console.error('Failed to adjust points:', error);
-            setError(error instanceof Error ? error.message : t('rewards:errors.action'));
-        }
-    };
-
-    const handleRedeem = async (e: React.FormEvent) => {
-        e.preventDefault();
-        if (!redeemMember) return;
-        setError('');
-        try {
-            await api.post('/api/rewards/redeem', {
-                member_id: redeemMember.id,
-                points: parseInt(redeemPoints, 10) || 0,
-                note: redeemNote,
-            });
-            setRedeemMember(null);
-            void load();
-        } catch (error) {
-            console.error('Failed to redeem points:', error);
-            setError(error instanceof Error ? error.message : t('rewards:errors.action'));
-        }
-    };
-
-    const handleSaveSettings = async (e: React.FormEvent) => {
-        e.preventDefault();
-        setError('');
-        try {
-            const value = parseFloat(settingsValue.replace(',', '.'));
-            await api.put('/api/rewards/settings', { points_value: value });
-            setSettingsOpen(false);
-            void load();
-        } catch (error) {
-            console.error('Failed to save reward settings:', error);
-            setError(error instanceof Error ? error.message : t('rewards:errors.action'));
-        }
-    };
-
-    const openAdjust = (member: RewardMember) => {
-        setAdjustPoints('');
-        setAdjustNote('');
-        setAdjustMember(member);
-    };
-
-    const openRedeem = (member: RewardMember) => {
-        setRedeemPoints('');
-        setRedeemNote('');
-        setRedeemMember(member);
-    };
-
-    const openGoalDialog = (member: RewardMember, goal?: RewardGoal) => {
-        setEditingGoal(goal ?? null);
-        setGoalTitle(goal?.title ?? '');
-        setGoalEmoji(goal?.emoji ?? '');
-        setGoalTarget(goal ? String(goal.target_amount) : '');
-        setGoalMember(member);
-    };
-
-    const handleSaveGoal = async (e: React.FormEvent) => {
-        e.preventDefault();
-        if (!goalMember) return;
-        setError('');
-        try {
-            const payload = {
-                title: goalTitle,
-                emoji: goalEmoji,
-                target_amount: parseFloat(goalTarget.replace(',', '.')) || 0,
-            };
-            if (editingGoal) {
-                await api.put(`/api/rewards/goals/${editingGoal.id}`, payload);
-            } else {
-                await api.post('/api/rewards/goals', { ...payload, member_id: goalMember.id });
+            if (mounted.current && id === requestId.current) {
+                setLoading(false);
+                setRefreshing(false);
             }
-            setGoalMember(null);
-            void load();
-        } catch (error) {
-            console.error('Failed to save goal:', error);
-            setError(error instanceof Error ? error.message : t('rewards:errors.action'));
         }
     };
 
-    const handleDeleteGoal = async () => {
-        if (!editingGoal) return;
-        setError('');
+    useEffect(() => {
+        mounted.current = true;
+        void load(false, true);
+        const timer = IS_FIREBASE ? undefined : window.setInterval(() => { void load(); }, 30_000);
+        return () => {
+            mounted.current = false;
+            ++requestId.current;
+            window.clearInterval(timer);
+        };
+    }, []);
+    useWebSocketUpdates('tasks', () => { void load(); });
+    useWebSocketUpdates('rewards', () => { void load(); });
+
+    const openAction = (next: PenaltyAction) => {
+        if (!isAdult || submitting.current) return;
+        setActionError('');
+        setReason('');
+        setAction(next);
+    };
+
+    const closeAction = () => {
+        if (!submitting.current) setAction(null);
+    };
+
+    const submit = async (event: React.FormEvent) => {
+        event.preventDefault();
+        if (!isAdult || !action || submitting.current) return;
+        submitting.current = true;
+        ++requestId.current;
+        setSaving(true);
+        setActionError('');
         try {
-            await api.delete(`/api/rewards/goals/${editingGoal.id}`);
-            setGoalMember(null);
-            void load();
-        } catch (error) {
-            console.error('Failed to delete goal:', error);
-            setError(error instanceof Error ? error.message : t('rewards:errors.action'));
+            if (action.kind === 'pay') {
+                await api.post(`/api/penalties/${encodeURIComponent(action.entry.id)}/pay`, { reason: reason.trim() });
+            } else {
+                await api.post('/api/penalties/review', {
+                    occurrence_key: action.entry.occurrence_key,
+                    status: action.kind,
+                    reason: reason.trim(),
+                });
+            }
+            await load(true);
+            if (mounted.current) setAction(null);
+        } catch (err) {
+            if (mounted.current) {
+                setActionError(err instanceof Error ? err.message : 'No se pudo registrar la penalidad. Inténtalo de nuevo.');
+            }
+        } finally {
+            submitting.current = false;
+            if (mounted.current) {
+                setSaving(false);
+                setRefreshing(false);
+            }
         }
     };
 
-    // Parent only: marks the goal achieved and auto-redeems the equivalent points.
-    const handleAchieveGoal = async (goal: RewardGoal) => {
-        setError('');
-        try {
-            await api.post(`/api/rewards/goals/${goal.id}/achieve`, {});
-            void load();
-        } catch (error) {
-            console.error('Failed to achieve goal:', error);
-            setError(error instanceof Error ? error.message : t('rewards:errors.action'));
-        }
+    const formatDate = (value?: string) => {
+        if (!value) return 'Sin fecha indicada';
+        const date = new Date(value);
+        return Number.isNaN(date.getTime()) ? 'Fecha no válida' : dates.format(date);
     };
 
-    const redeemAmount = (parseInt(redeemPoints, 10) || 0) * pointsValue;
+    const entryDetails = (entry: PenaltyProposal) => {
+        const deadline = penaltyDeadline(entry.due_date);
+        const dateOnly = /^\d{4}-\d{2}-\d{2}$/.test(entry.due_date);
+        return (
+            <div className="min-w-0 space-y-3">
+                <div className="flex flex-wrap items-center gap-2">
+                    <Badge className="max-w-full gap-2">
+                        <span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: entry.member_color }} aria-hidden="true" />
+                        <span className="break-words">Responsable: {entry.member_name}</span>
+                    </Badge>
+                </div>
+                <h3 className="break-words text-body font-semibold">{entry.task_title}</h3>
+                <p className="text-caption text-muted-foreground">
+                    Vencimiento: {deadline && !Number.isNaN(deadline.getTime()) ? dates.format(deadline) : 'Fecha no válida'}
+                    {dateOnly && ' (fin del día, 23:59)'}
+                </p>
+            </div>
+        );
+    };
 
-    // Shared by the parent view and the kid view.
-    const goalDialog = (
-        <Dialog
-            open={goalMember !== null}
-            onOpenChange={(open: boolean) => { if (!open) setGoalMember(null); }}
-            title={editingGoal
-                ? t('rewards:goalDialog.editTitle', { name: goalMember?.name ?? '' })
-                : t('rewards:goalDialog.addTitle', { name: goalMember?.name ?? '' })}
-            description={t('rewards:goalDialog.description')}
-        >
-            <form onSubmit={handleSaveGoal} className="space-y-4">
-                <div className="flex gap-3">
-                    <Input
-                        label={t('rewards:goalDialog.emoji')}
-                        value={goalEmoji}
-                        onChange={(e) => setGoalEmoji(e.target.value)}
-                        placeholder="🎮"
-                        maxLength={8}
-                        className="w-24 text-center"
-                    />
-                    <div className="flex-1">
-                        <Input
-                            label={t('rewards:goalDialog.titleLabel')}
-                            value={goalTitle}
-                            onChange={(e) => setGoalTitle(e.target.value)}
-                            placeholder={t('rewards:goalDialog.titlePlaceholder')}
-                            maxLength={200}
-                            required
-                        />
-                    </div>
-                </div>
-                <Input
-                    label={t('rewards:goalDialog.target', { currency })}
-                    type="number"
-                    min={0.01}
-                    step={0.01}
-                    value={goalTarget}
-                    onChange={(e) => setGoalTarget(e.target.value)}
-                    required
-                />
-                <div className="flex items-center justify-between gap-3 pt-2">
-                    {editingGoal ? (
-                        <Button type="button" variant="ghost" className="text-danger" onClick={handleDeleteGoal}>
-                            {t('rewards:goalDialog.delete')}
-                        </Button>
-                    ) : <span />}
-                    <div className="flex gap-3">
-                        <Button type="button" variant="secondary" onClick={() => setGoalMember(null)}>
-                            {t('common:actions.cancel')}
-                        </Button>
-                        <Button type="submit" disabled={!goalTitle.trim() || !(parseFloat(goalTarget.replace(',', '.')) > 0)}>
-                            {t('common:actions.save')}
-                        </Button>
-                    </div>
-                </div>
-            </form>
-        </Dialog>
+    const reviewDetails = (entry: Penalty) => (
+        <div className="space-y-1 border-t border-border pt-3 text-caption text-muted-foreground">
+            <p>Revisada el {formatDate(entry.reviewed_at)}</p>
+            <p className="break-words">Revisada por: {entry.reviewed_by || 'Sin revisor indicado'}</p>
+            <p className="whitespace-pre-wrap break-words">Motivo: {entry.reason?.trim() || 'Sin motivo indicado'}</p>
+        </div>
     );
 
-    if (loading) {
-        return (
-            <div className="flex h-full items-center justify-center min-h-[50vh]">
-                <div className="flex flex-col items-center gap-4">
-                    <div className="spinner-brand" />
-                    <p className="text-muted-foreground font-medium animate-pulse">{t('rewards:loading')}</p>
-                </div>
-            </div>
-        );
-    }
-
-    // ── Kid view: a child account linked to a member gets a simplified page ──
-    if (!isParent) {
-        const kidMember = (summary?.members || []).find((m) => m.linked_user_id === user?.id) || null;
-
-        if (!kidMember) {
-            return (
-                <div className="max-w-2xl mx-auto">
-                    <Card>
-                        <CardContent className="p-10 text-center">
-                            <span className="text-6xl" aria-hidden="true">🐷</span>
-                            <h1 className="mt-4 text-h1">{t('rewards:kid.notLinkedTitle')}</h1>
-                            <p className="mt-2 text-body text-muted-foreground">{t('rewards:kid.notLinkedMessage')}</p>
-                        </CardContent>
-                    </Card>
-                </div>
-            );
-        }
-
-        const kidGoal = activeGoalByMember.get(kidMember.id) || null;
-        const reached = kidGoal ? goalReached(kidMember, kidGoal) : false;
-        const percent = kidGoal ? goalPercent(kidMember, kidGoal) : 0;
-        const missing = kidGoal ? Math.max(0, kidGoal.target_amount - kidMember.currency_value) : 0;
-        const myTasks = kidTasks
-            .filter((task) => (task.assigned_to || []).includes(kidMember.id) && (!task.is_completed || task.pending_approval))
-            .slice(0, 6);
-        const myTx = (txByMember.get(kidMember.id) || []).slice(0, 5);
-
-        return (
-            <div className="max-w-3xl mx-auto space-y-6">
-                {error ? (
-                    <div className="rounded-input border border-danger/30 bg-danger/10 px-4 py-3 text-caption text-danger">
-                        {error}
-                    </div>
-                ) : null}
-
-                <div className="text-center">
-                    <h1 className="font-serif text-4xl tracking-tight">{t('rewards:kid.hello', { name: kidMember.name })}</h1>
-                    <p className="mt-1 text-body text-muted-foreground">{t('rewards:kid.subtitle')}</p>
-                </div>
-
-                {/* Piggy bank */}
-                <Card className="overflow-hidden">
-                    <div className="h-2" style={{ backgroundColor: kidMember.color }} />
-                    <CardContent className="p-8 text-center">
-                        <PiggyBank className="mx-auto mb-3 h-12 w-12 text-pink-500" />
-                        <p key={kidMember.balance} className="animate-slide-up flex items-center justify-center gap-3 font-serif text-6xl tracking-tight">
-                            <Star className="h-10 w-10 text-amber-500 fill-current" />
-                            {kidMember.balance}
-                        </p>
-                        <p className="mt-2 text-body font-medium text-muted-foreground">
-                            {t('rewards:worth', { amount: formatCurrency(kidMember.currency_value, currency) })}
-                        </p>
-                        {kidMember.streak >= 2 && (
-                            <p className="mt-2 flex items-center justify-center gap-1 text-body font-medium text-orange-500">
-                                <Flame className="h-5 w-5" />
-                                {t('rewards:streak', { count: kidMember.streak })}
-                            </p>
-                        )}
-                    </CardContent>
-                </Card>
-
-                {/* Savings goal — the hero element */}
-                {kidGoal ? (
-                    <Card className={`relative overflow-hidden ${reached ? 'border-amber-400' : ''}`}>
-                        {reached && <Confetti />}
-                        <CardContent className="p-6 text-center">
-                            <span className="text-5xl" aria-hidden="true">{kidGoal.emoji || '🎯'}</span>
-                            <h2 className="mt-2 text-h2">{kidGoal.title}</h2>
-                            <div className="mt-4 h-4 w-full overflow-hidden rounded-full bg-border">
-                                <div
-                                    className="h-full rounded-full transition-all duration-700"
-                                    style={{ width: `${percent}%`, backgroundColor: reached ? '#F59E0B' : kidMember.color }}
-                                />
-                            </div>
-                            <p className="mt-2 text-body font-semibold tabular-nums">
-                                {t('rewards:goals.progress', {
-                                    current: formatCurrency(kidMember.currency_value, currency),
-                                    target: formatCurrency(kidGoal.target_amount, currency),
-                                })}
-                                {' · '}{percent}%
-                            </p>
-                            {reached ? (
-                                <>
-                                    <p className="mt-2 text-body font-semibold text-amber-600">{t('rewards:kid.reached')}</p>
-                                    <p className="mt-1 text-caption text-muted-foreground">{t('rewards:kid.reachedHint')}</p>
-                                </>
-                            ) : (
-                                <p className="mt-1 text-caption text-muted-foreground">
-                                    {t('rewards:kid.missing', { amount: formatCurrency(missing, currency) })}
-                                </p>
-                            )}
-                            <Button variant="secondary" size="sm" className="mt-4" onClick={() => openGoalDialog(kidMember, kidGoal)}>
-                                <Target className="mr-1 h-4 w-4" />
-                                {t('rewards:kid.editGoal')}
-                            </Button>
-                        </CardContent>
-                    </Card>
-                ) : (
-                    <Card>
-                        <CardContent className="p-8 text-center">
-                            <span className="text-5xl" aria-hidden="true">🌟</span>
-                            <p className="mt-3 text-body text-muted-foreground">{t('rewards:kid.noGoal')}</p>
-                            <Button className="mt-4" onClick={() => openGoalDialog(kidMember)}>
-                                <Target className="mr-2 h-4 w-4" />
-                                {t('rewards:kid.addGoal')}
-                            </Button>
-                        </CardContent>
-                    </Card>
-                )}
-
-                {/* The child's tasks (read-only) */}
-                <Card>
-                    <CardContent className="p-5">
-                        <div className="mb-3 flex items-center justify-between gap-2">
-                            <h2 className="flex items-center gap-2 text-body font-semibold">
-                                <ListChecks className="h-5 w-5 text-primary" />
-                                {t('rewards:kid.tasksTitle')}
-                            </h2>
-                            <Link to="/tasks" className="text-caption font-medium text-primary hover:underline">
-                                {t('rewards:kid.allTasks')}
-                            </Link>
-                        </div>
-                        {myTasks.length === 0 ? (
-                            <p className="text-caption text-muted-foreground">{t('rewards:kid.tasksEmpty')}</p>
-                        ) : (
-                            <ul className="space-y-2">
-                                {myTasks.map((task) => (
-                                    <li key={task.id} className="flex items-center gap-3 rounded-input border border-border bg-card px-3 py-2.5">
-                                        <span className="min-w-0 flex-1 truncate font-medium">{task.title}</span>
-                                        {task.pending_approval && (
-                                            <Badge variant="warning" className="flex items-center gap-1">
-                                                <Hourglass className="h-3 w-3" />
-                                                {t('rewards:kid.pendingBadge')}
-                                            </Badge>
-                                        )}
-                                        {task.points > 0 && (
-                                            <Badge variant="primary" className="flex items-center gap-1">
-                                                <Star className="h-3 w-3 fill-current" />
-                                                {task.points}
-                                            </Badge>
-                                        )}
-                                    </li>
-                                ))}
-                            </ul>
-                        )}
-                    </CardContent>
-                </Card>
-
-                {/* Simplified history */}
-                {myTx.length > 0 && (
-                    <Card>
-                        <CardContent className="p-5">
-                            <h2 className="mb-3 text-body font-semibold">{t('rewards:kid.historyTitle')}</h2>
-                            <ul className="space-y-1.5">
-                                {myTx.map((tx) => (
-                                    <li key={tx.id} className="flex items-center gap-2 text-caption">
-                                        {txIcon(tx.type)}
-                                        <span className="min-w-0 flex-1 truncate text-muted-foreground">
-                                            {tx.note || t(`rewards:types.${tx.type}`)}
-                                        </span>
-                                        <span className="shrink-0 text-micro text-muted-foreground">
-                                            {format(parseISO(tx.created_at), 'dd MMM', { locale: dateLocale() })}
-                                        </span>
-                                        <span className={`shrink-0 font-semibold tabular-nums ${tx.points >= 0 ? 'text-success' : 'text-danger'}`}>
-                                            {tx.points >= 0 ? `+${tx.points}` : tx.points}
-                                        </span>
-                                    </li>
-                                ))}
-                            </ul>
-                        </CardContent>
-                    </Card>
-                )}
-
-                {goalDialog}
-            </div>
-        );
-    }
+    const review = summary?.review || [];
+    const pending = summary?.pending || [];
+    const history = summary?.history || [];
+    const totals = summary?.totals || [];
+    const grandTotal = totals.reduce((total, member) => total + member.amount, 0);
+    const actionLabel = action?.kind === 'pay' ? 'Marcar como pagada'
+        : action?.kind === 'forgiven' ? 'Perdonar penalidad' : 'Confirmar penalidad';
 
     return (
-        <div className="max-w-6xl mx-auto space-y-6">
-            {error ? (
-                <div className="rounded-input border border-danger/30 bg-danger/10 px-4 py-3 text-caption text-danger">
-                    {error}
-                </div>
-            ) : null}
-
-            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-                <div>
-                    <h1 className="text-h1 mb-1">{t('rewards:title')}</h1>
-                    <p className="text-muted-foreground text-body">{t('rewards:subtitle')}</p>
-                </div>
-                {isParent && (
-                    <Button variant="secondary" onClick={() => {
-                        setSettingsValue(String(pointsValue));
-                        setSettingsOpen(true);
-                    }}>
-                        <Settings2 className="w-4 h-4 mr-2" />
-                        {t('rewards:settings.rate', { value: formatCurrency(pointsValue, currency) })}
-                    </Button>
-                )}
-            </div>
-
-            {/* Parent-only approvals queue */}
-            {isParent && (summary?.pending_tasks || []).length > 0 && (
-                <Card className="border-amber-300 bg-amber-50/50 dark:border-amber-900 dark:bg-amber-950/20">
-                    <CardContent className="p-4">
-                        <h2 className="mb-3 flex items-center gap-2 text-body font-semibold">
-                            <Hourglass className="h-5 w-5 text-warning" />
-                            {t('rewards:approvals.title', { count: summary!.pending_tasks.length })}
-                        </h2>
-                        <ul className="space-y-2">
-                            {summary!.pending_tasks.map((task) => (
-                                <li key={task.id} className="flex flex-wrap items-center gap-3 rounded-input bg-card px-3 py-2.5 border border-border">
-                                    <span className="min-w-0 flex-1 truncate font-medium">{task.title}</span>
-                                    {task.assigned_to_members.map((m) => (
-                                        <Badge key={m.id} variant="primary" className="flex items-center gap-1">
-                                            <span className="h-2 w-2 rounded-full" style={{ backgroundColor: m.color }} />
-                                            {m.name}
-                                        </Badge>
-                                    ))}
-                                    <Badge variant="warning" className="flex items-center gap-1">
-                                        <Star className="h-3 w-3 fill-current" />
-                                        {task.points}
-                                    </Badge>
-                                    <div className="flex items-center gap-2">
-                                        <Button variant="secondary" size="sm" onClick={() => handleApprove(task.id)} className="text-success">
-                                            <Check className="h-4 w-4 mr-1" />
-                                            {t('rewards:approvals.approve')}
-                                        </Button>
-                                        <Button variant="ghost" size="sm" onClick={() => handleReject(task.id)} className="text-destructive">
-                                            <X className="h-4 w-4 mr-1" />
-                                            {t('rewards:approvals.reject')}
-                                        </Button>
-                                    </div>
-                                </li>
-                            ))}
-                        </ul>
-                    </CardContent>
-                </Card>
-            )}
-
-            {/* Member cards */}
-            {visibleMembers.length === 0 ? (
-                <Card>
-                    <CardContent className="p-8 text-center">
-                        <PiggyBank className="h-12 w-12 text-muted-foreground mx-auto mb-3 opacity-50" />
-                        <p className="text-muted-foreground">{t('rewards:empty')}</p>
-                    </CardContent>
-                </Card>
-            ) : (
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    {visibleMembers.map((member) => {
-                        const memberTx = (txByMember.get(member.id) || []).slice(0, 5);
-                        return (
-                            <Card key={member.id} className="overflow-hidden">
-                                <div className="h-1.5" style={{ backgroundColor: member.color }} />
-                                <CardContent className="p-5">
-                                    <div className="flex items-start justify-between gap-3">
-                                        <div className="flex items-center gap-3">
-                                            <div
-                                                className="flex h-11 w-11 items-center justify-center rounded-full text-white text-body font-semibold"
-                                                style={{ backgroundColor: member.color }}
-                                            >
-                                                {member.name.charAt(0)}
-                                            </div>
-                                            <div>
-                                                <p className="text-body font-semibold">{member.name}</p>
-                                                {member.streak >= 2 && (
-                                                    <p className="flex items-center gap-1 text-caption text-orange-500">
-                                                        <Flame className="h-4 w-4" />
-                                                        {t('rewards:streak', { count: member.streak })}
-                                                    </p>
-                                                )}
-                                            </div>
-                                        </div>
-                                        {member.pending_count > 0 && (
-                                            <Badge variant="warning" className="flex items-center gap-1">
-                                                <Hourglass className="h-3 w-3" />
-                                                {t('rewards:pendingCount', { count: member.pending_count })}
-                                            </Badge>
-                                        )}
-                                    </div>
-
-                                    <div className="mt-4 flex items-end justify-between gap-3">
-                                        <div key={member.balance} className="animate-slide-up">
-                                            <p className="flex items-center gap-2 font-serif text-4xl tracking-tight">
-                                                <Star className="h-7 w-7 text-amber-500 fill-current" />
-                                                {member.balance}
-                                            </p>
-                                            <p className="mt-1 text-caption text-muted-foreground">
-                                                {t('rewards:worth', { amount: formatCurrency(member.currency_value, currency) })}
-                                            </p>
-                                        </div>
-                                        {isParent && (
-                                            <div className="flex items-center gap-2">
-                                                <Button variant="secondary" size="sm" onClick={() => openAdjust(member)}>
-                                                    <SlidersHorizontal className="h-4 w-4 mr-1" />
-                                                    {t('rewards:actions.adjust')}
-                                                </Button>
-                                                <Button size="sm" onClick={() => openRedeem(member)} disabled={member.balance <= 0}>
-                                                    <Coins className="h-4 w-4 mr-1" />
-                                                    {t('rewards:actions.redeem')}
-                                                </Button>
-                                            </div>
-                                        )}
-                                    </div>
-
-                                    {/* Savings goal */}
-                                    {(() => {
-                                        const goal = activeGoalByMember.get(member.id);
-                                        if (!goal) {
-                                            return isParent ? (
-                                                <button
-                                                    type="button"
-                                                    onClick={() => openGoalDialog(member)}
-                                                    className="mt-4 flex w-full items-center justify-center gap-2 rounded-input border border-dashed border-border px-3 py-2 text-caption text-muted-foreground transition-colors hover:border-primary hover:text-primary"
-                                                >
-                                                    <Target className="h-4 w-4" />
-                                                    {t('rewards:goals.add')}
-                                                </button>
-                                            ) : null;
-                                        }
-                                        const reached = goalReached(member, goal);
-                                        const percent = goalPercent(member, goal);
-                                        return (
-                                            <div className={`mt-4 rounded-input border px-3 py-3 ${reached ? 'border-amber-400 bg-amber-50/60 dark:bg-amber-950/20' : 'border-border bg-surface-2'}`}>
-                                                <div className="flex items-center justify-between gap-2">
-                                                    <button
-                                                        type="button"
-                                                        onClick={() => openGoalDialog(member, goal)}
-                                                        disabled={!isParent}
-                                                        className="flex min-w-0 items-center gap-2 text-left"
-                                                        title={isParent ? t('rewards:goals.editTitle') : undefined}
-                                                    >
-                                                        <span className="text-xl" aria-hidden="true">{goal.emoji || '🎯'}</span>
-                                                        <span className="truncate text-caption font-semibold">{goal.title}</span>
-                                                    </button>
-                                                    <span className="shrink-0 text-caption font-semibold tabular-nums">{percent}%</span>
-                                                </div>
-                                                <div className="mt-2 h-2.5 w-full overflow-hidden rounded-full bg-border">
-                                                    <div
-                                                        className="h-full rounded-full transition-all duration-700"
-                                                        style={{ width: `${percent}%`, backgroundColor: reached ? '#F59E0B' : member.color }}
-                                                    />
-                                                </div>
-                                                <div className="mt-1.5 flex items-center justify-between gap-2">
-                                                    <span className="text-micro text-muted-foreground tabular-nums">
-                                                        {t('rewards:goals.progress', {
-                                                            current: formatCurrency(member.currency_value, currency),
-                                                            target: formatCurrency(goal.target_amount, currency),
-                                                        })}
-                                                    </span>
-                                                    {isParent && reached && (
-                                                        <Button size="sm" onClick={() => handleAchieveGoal(goal)}>
-                                                            <Trophy className="mr-1 h-4 w-4" />
-                                                            {t('rewards:goals.markAchieved')}
-                                                        </Button>
-                                                    )}
-                                                </div>
-                                            </div>
-                                        );
-                                    })()}
-
-                                    {memberTx.length > 0 && (
-                                        <ul className="mt-4 space-y-1.5 border-t border-border pt-3">
-                                            {memberTx.map((tx) => (
-                                                <li key={tx.id} className="flex items-center gap-2 text-caption">
-                                                    {txIcon(tx.type)}
-                                                    <span className="min-w-0 flex-1 truncate text-muted-foreground">
-                                                        {tx.note || t(`rewards:types.${tx.type}`)}
-                                                    </span>
-                                                    <span className="shrink-0 text-micro text-muted-foreground">
-                                                        {format(parseISO(tx.created_at), 'dd MMM', { locale: dateLocale() })}
-                                                    </span>
-                                                    <span className={`shrink-0 font-semibold tabular-nums ${tx.points >= 0 ? 'text-success' : 'text-danger'}`}>
-                                                        {tx.points >= 0 ? `+${tx.points}` : tx.points}
-                                                    </span>
-                                                </li>
-                                            ))}
-                                        </ul>
-                                    )}
-                                </CardContent>
-                            </Card>
-                        );
-                    })}
-                </div>
-            )}
-
-            {/* Goal dialog (add / edit / delete) */}
-            {goalDialog}
-
-            {/* Adjust dialog */}
-            <Dialog
-                open={adjustMember !== null}
-                onOpenChange={(open: boolean) => { if (!open) setAdjustMember(null); }}
-                title={t('rewards:adjustDialog.title', { name: adjustMember?.name ?? '' })}
-                description={t('rewards:adjustDialog.description')}
-            >
-                <form onSubmit={handleAdjust} className="space-y-4">
-                    <Input
-                        label={t('rewards:adjustDialog.points')}
-                        type="number"
-                        step={1}
-                        value={adjustPoints}
-                        onChange={(e) => setAdjustPoints(e.target.value)}
-                        placeholder="+10 / -5"
-                        required
-                    />
-                    <Input
-                        label={t('rewards:fields.note')}
-                        value={adjustNote}
-                        onChange={(e) => setAdjustNote(e.target.value)}
-                        placeholder={t('rewards:adjustDialog.notePlaceholder')}
-                    />
-                    <div className="flex justify-end gap-3 pt-2">
-                        <Button type="button" variant="secondary" onClick={() => setAdjustMember(null)}>
-                            {t('common:actions.cancel')}
-                        </Button>
-                        <Button type="submit" disabled={!parseInt(adjustPoints, 10)}>
-                            {t('common:actions.save')}
-                        </Button>
-                    </div>
-                </form>
-            </Dialog>
-
-            {/* Redeem dialog */}
-            <Dialog
-                open={redeemMember !== null}
-                onOpenChange={(open: boolean) => { if (!open) setRedeemMember(null); }}
-                title={t('rewards:redeemDialog.title', { name: redeemMember?.name ?? '' })}
-                description={t('rewards:redeemDialog.description', { balance: redeemMember?.balance ?? 0 })}
-            >
-                <form onSubmit={handleRedeem} className="space-y-4">
-                    <Input
-                        label={t('rewards:redeemDialog.points')}
-                        type="number"
-                        min={1}
-                        max={redeemMember?.balance ?? 0}
-                        step={1}
-                        value={redeemPoints}
-                        onChange={(e) => setRedeemPoints(e.target.value)}
-                        required
-                    />
-                    <p className="flex items-center gap-2 rounded-input bg-surface-2 px-3 py-2.5 text-body font-medium">
-                        <PiggyBank className="h-5 w-5 text-pink-500" />
-                        {t('rewards:redeemDialog.amount', { amount: formatCurrency(redeemAmount, currency) })}
+        <div className="mx-auto max-w-6xl space-y-8">
+            <header className="flex flex-col justify-between gap-4 sm:flex-row sm:items-start">
+                <div className="min-w-0">
+                    <h1 className="mb-2 flex items-center gap-3 text-h1"><Scale className="h-7 w-7 shrink-0 text-primary" />Penalidades</h1>
+                    <p className="text-body text-muted-foreground">
+                        Revisa las tareas vencidas y registra su penalidad. Solo se lleva un registro: no se realizan cargos ni cobros automáticos.
                     </p>
-                    <Input
-                        label={t('rewards:fields.note')}
-                        value={redeemNote}
-                        onChange={(e) => setRedeemNote(e.target.value)}
-                        placeholder={t('rewards:redeemDialog.notePlaceholder')}
-                    />
-                    <div className="flex justify-end gap-3 pt-2">
-                        <Button type="button" variant="secondary" onClick={() => setRedeemMember(null)}>
-                            {t('common:actions.cancel')}
-                        </Button>
-                        <Button
-                            type="submit"
-                            disabled={
-                                (parseInt(redeemPoints, 10) || 0) <= 0
-                                || (parseInt(redeemPoints, 10) || 0) > (redeemMember?.balance ?? 0)
-                            }
-                        >
-                            {t('rewards:actions.redeem')}
-                        </Button>
-                    </div>
-                </form>
-            </Dialog>
+                    <p className="mt-2 text-caption text-muted-foreground">El importe de cada penalidad corresponde a cada responsable, no se reparte entre los participantes.</p>
+                </div>
+                <Button variant="secondary" disabled={refreshing || saving} onClick={() => { void load(false, true); }} className="shrink-0">
+                    <RefreshCw className={`mr-2 h-4 w-4 ${refreshing ? 'animate-spin' : ''}`} aria-hidden="true" />
+                    {refreshing ? 'Actualizando...' : 'Actualizar'}
+                </Button>
+            </header>
 
-            {/* Settings dialog */}
+            {!isAdult && <p className="rounded-input border border-border bg-surface-2 px-4 py-3 text-caption">Solo los adultos pueden revisar penalidades o marcarlas como pagadas.</p>}
+            {IS_FIREBASE && <p className="text-caption text-muted-foreground">Spark detecta vencimientos al abrir la aplicación o esta página y al pulsar Actualizar como adulto. No hay detección periódica en segundo plano.</p>}
+            {summary?.truncated && <p role="status" className="rounded-input border border-warning/30 bg-warning/10 px-4 py-3 text-caption">Vista parcial: alguna lista alcanzó el límite de 200 registros. Puede haber más penalidades que no se muestran.</p>}
+            {error && <div role="alert" className="rounded-input border border-danger/30 bg-danger/10 px-4 py-3 text-caption text-danger">{error}</div>}
+            {loading && <p role="status" className="flex items-center gap-3 text-muted-foreground"><span className="spinner-brand" />Cargando penalidades...</p>}
+
+            <section aria-labelledby="penalties-review" className="space-y-4" aria-busy={loading}>
+                <div className="flex flex-wrap items-center gap-3">
+                    <Clock className="h-5 w-5 text-warning" aria-hidden="true" />
+                    <h2 id="penalties-review" className="text-h2">Por revisar</h2>
+                    <Badge variant="warning">{review.length}</Badge>
+                </div>
+                <p className="text-caption text-muted-foreground">Propuestas de 5 o 10 EUR por responsable. Un adulto debe confirmar o perdonar cada propuesta.</p>
+                {!loading && summary && review.length === 0 && <Card><CardContent className="p-5 text-caption text-muted-foreground">No hay penalidades por revisar.</CardContent></Card>}
+                <div className="grid gap-4 md:grid-cols-2">
+                    {review.map(entry => (
+                        <Card key={entry.occurrence_key}>
+                            <CardContent className="space-y-4 p-5">
+                                {entryDetails(entry)}
+                                <p className="text-body font-semibold tabular-nums">Importe propuesto: {euros.format(entry.amount)} <span className="text-caption font-normal text-muted-foreground">por responsable</span></p>
+                                {isAdult && <div className="flex flex-col gap-2 sm:flex-row">
+                                    <Button disabled={saving} onClick={() => openAction({ kind: 'pending', entry })}>Confirmar penalidad</Button>
+                                    <Button variant="secondary" disabled={saving} onClick={() => openAction({ kind: 'forgiven', entry })}>Perdonar</Button>
+                                </div>}
+                            </CardContent>
+                        </Card>
+                    ))}
+                </div>
+            </section>
+
+            <section aria-labelledby="penalties-pending" className="space-y-4" aria-busy={loading}>
+                <div className="flex flex-wrap items-center gap-3">
+                    <Scale className="h-5 w-5 text-primary" aria-hidden="true" />
+                    <h2 id="penalties-pending" className="text-h2">Pendientes de pago</h2>
+                    <Badge variant="primary">{pending.length}</Badge>
+                </div>
+                {summary && <Card className="border-primary/20 bg-primary/5">
+                    <CardContent className="space-y-4 p-5">
+                        <div className="flex flex-wrap items-baseline justify-between gap-2">
+                            <h3 className="text-body font-semibold">Total pendiente</h3>
+                            <p className="font-serif text-3xl tabular-nums">{euros.format(grandTotal)}</p>
+                        </div>
+                        {totals.length > 0 && <ul className="grid gap-3 border-t border-primary/20 pt-4 sm:grid-cols-2 lg:grid-cols-3">
+                            {totals.map(member => <li key={member.member_id} className="flex min-w-0 items-center gap-2 text-caption">
+                                <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: member.member_color }} aria-hidden="true" />
+                                <span className="min-w-0 flex-1 break-words">{member.member_name}</span>
+                                <span className="shrink-0 font-semibold tabular-nums">{euros.format(member.amount)}</span>
+                            </li>)}
+                        </ul>}
+                    </CardContent>
+                </Card>}
+                {!loading && summary && pending.length === 0 && <Card><CardContent className="p-5 text-caption text-muted-foreground">No hay penalidades pendientes de pago.</CardContent></Card>}
+                <div className="grid gap-4 md:grid-cols-2">
+                    {pending.map(entry => <Card key={entry.id}>
+                        <CardContent className="space-y-4 p-5">
+                            <Badge variant="warning">Pendiente de pago</Badge>
+                            {entryDetails(entry)}
+                            <p className="text-body font-semibold tabular-nums">{euros.format(entry.amount)} <span className="text-caption font-normal text-muted-foreground">por responsable</span></p>
+                            {reviewDetails(entry)}
+                            {isAdult && <Button disabled={saving} onClick={() => openAction({ kind: 'pay', entry })} className="w-full sm:w-auto">
+                                <Check className="mr-2 h-4 w-4" aria-hidden="true" />Marcar como pagada
+                            </Button>}
+                        </CardContent>
+                    </Card>)}
+                </div>
+            </section>
+
+            <section aria-labelledby="penalties-history" className="space-y-4" aria-busy={loading}>
+                <div className="flex flex-wrap items-center gap-3">
+                    <History className="h-5 w-5 text-muted-foreground" aria-hidden="true" />
+                    <h2 id="penalties-history" className="text-h2">Historial</h2>
+                    <Badge>{history.length}</Badge>
+                </div>
+                <p className="text-caption text-muted-foreground">Penalidades pagadas o perdonadas. Los registros confirmados no se editan ni se eliminan.</p>
+                {!loading && summary && history.length === 0 && <Card><CardContent className="p-5 text-caption text-muted-foreground">Todavía no hay penalidades pagadas o perdonadas.</CardContent></Card>}
+                <div className="grid gap-4 md:grid-cols-2">
+                    {history.map(entry => <Card key={entry.id}>
+                        <CardContent className="space-y-4 p-5">
+                            <Badge variant={entry.status === 'paid' ? 'success' : 'secondary'}>{entry.status === 'paid' ? 'Pagada' : 'Perdonada'}</Badge>
+                            {entryDetails(entry)}
+                            <p className="text-body font-semibold tabular-nums">{euros.format(entry.amount)} <span className="text-caption font-normal text-muted-foreground">por responsable{entry.status === 'forgiven' ? ' (importe perdonado)' : ''}</span></p>
+                            {reviewDetails(entry)}
+                            {entry.status === 'paid' && <div className="space-y-1 border-t border-border pt-3 text-caption text-muted-foreground">
+                                <p>Pagada el {formatDate(entry.paid_at)}</p>
+                                <p className="break-words">Pago registrado por: {entry.paid_by || 'Sin responsable indicado'}</p>
+                                <p className="whitespace-pre-wrap break-words">Motivo del pago: {entry.payment_reason?.trim() || 'Sin motivo indicado'}</p>
+                            </div>}
+                        </CardContent>
+                    </Card>)}
+                </div>
+            </section>
+
             <Dialog
-                open={settingsOpen}
-                onOpenChange={setSettingsOpen}
-                title={t('rewards:settings.title')}
-                description={t('rewards:settings.description')}
+                open={action !== null}
+                onOpenChange={open => { if (!open) closeAction(); }}
+                title={actionLabel}
+                description={action?.kind === 'pay' ? 'Solo se registrará el pago. No se realizará ningún cobro.'
+                    : action?.kind === 'forgiven' ? 'La propuesta se guardará como perdonada, sin importe pendiente de pago.'
+                        : 'La penalidad quedará registrada como pendiente de pago. No se realizará ningún cargo.'}
+                className={saving ? '[&>div:first-child>button]:pointer-events-none [&>div:first-child>button]:opacity-50' : undefined}
             >
-                <form onSubmit={handleSaveSettings} className="space-y-4">
-                    <Input
-                        label={t('rewards:settings.label')}
-                        type="number"
-                        min={0}
-                        step={0.01}
-                        value={settingsValue}
-                        onChange={(e) => setSettingsValue(e.target.value)}
-                        required
-                    />
-                    <p className="text-caption text-muted-foreground">
-                        {t('rewards:settings.example', {
-                            points: 10,
-                            amount: formatCurrency((parseFloat(settingsValue.replace(',', '.')) || 0) * 10, currency),
-                        })}
+                {action && <form onSubmit={submit} className="space-y-4" aria-busy={saving}>
+                    {entryDetails(action.entry)}
+                    <p className="rounded-input bg-surface-2 px-3 py-3 text-body font-semibold tabular-nums">
+                        {euros.format(action.entry.amount)} por responsable
                     </p>
-                    <div className="flex justify-end gap-3 pt-2">
-                        <Button type="button" variant="secondary" onClick={() => setSettingsOpen(false)}>
-                            {t('common:actions.cancel')}
-                        </Button>
-                        <Button type="submit">{t('common:actions.save')}</Button>
+                    {error && <div role="alert" className="rounded-input border border-danger/30 bg-danger/10 px-3 py-3 text-caption text-danger">{error}</div>}
+                    {!isAdult && <p className="text-caption text-danger">Solo los adultos pueden revisar penalidades o marcarlas como pagadas.</p>}
+                    <Textarea
+                        label={action.kind === 'pay' ? 'Motivo del pago (opcional)' : 'Motivo de la revisión (opcional)'}
+                        aria-label={action.kind === 'pay' ? 'Motivo del pago (opcional)' : 'Motivo de la revisión (opcional)'}
+                        value={reason}
+                        onChange={event => setReason(event.target.value)}
+                        placeholder="Si lo deseas, añade un motivo."
+                        maxLength={500}
+                        disabled={saving || !isAdult}
+                    />
+                    <div className="flex flex-col-reverse gap-3 pt-2 sm:flex-row sm:justify-end">
+                        <Button type="button" variant="secondary" disabled={saving} onClick={closeAction}>Cancelar</Button>
+                        {isAdult && <Button type="submit" disabled={saving}>{saving ? 'Guardando...' : actionLabel}</Button>}
                     </div>
-                </form>
+                </form>}
             </Dialog>
         </div>
     );

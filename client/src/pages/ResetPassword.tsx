@@ -6,9 +6,11 @@ import { Button } from '../components/ui/Button';
 import { Input } from '../components/ui/Input';
 import { LanguageSwitcher } from '../components/ui/LanguageSwitcher';
 import { api } from '../lib/api';
+import { IS_FIREBASE } from '../lib/firebase/config';
+import { firebaseVerifyPasswordReset } from '../lib/firebase/transport';
 
 /**
- * Consumes a password-reset link (/reset-password?token=...). Rendered outside
+ * Consumes a password-reset link (Firebase oobCode or legacy token). Rendered outside
  * the authenticated app: someone who lost their password is by definition
  * logged out. On success the user is sent back to the login screen.
  */
@@ -20,17 +22,30 @@ const ResetPassword: React.FC<{ onDone: () => void }> = ({ onDone }) => {
     const [error, setError] = useState('');
     const [loading, setLoading] = useState(false);
     const [done, setDone] = useState(false);
+    const [verified, setVerified] = useState(!IS_FIREBASE);
+    const [verifying, setVerifying] = useState(IS_FIREBASE);
 
     // The native shell uses HashRouter, so the token can arrive in either place.
     useEffect(() => {
-        const fromSearch = new URLSearchParams(window.location.search).get('token');
+        let active = true;
+        const parameter = IS_FIREBASE ? 'oobCode' : 'token';
+        const fromSearch = new URLSearchParams(window.location.search).get(parameter);
         const hashQuery = window.location.hash.split('?')[1] ?? '';
-        const fromHash = new URLSearchParams(hashQuery).get('token');
-        setToken(fromSearch || fromHash || '');
+        const fromHash = new URLSearchParams(hashQuery).get(parameter);
+        const code = fromSearch || fromHash || '';
+        setToken(code);
+        if (IS_FIREBASE && code) {
+            void firebaseVerifyPasswordReset(code)
+                .then(() => { if (active) setVerified(true); })
+                .catch(failure => { if (active) setError(failure.message); })
+                .finally(() => { if (active) setVerifying(false); });
+        } else setVerifying(false);
+        return () => { active = false; };
     }, []);
 
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
+        if (!verified || verifying) return;
         setError('');
 
         if (password.length < 8) {
@@ -44,7 +59,7 @@ const ResetPassword: React.FC<{ onDone: () => void }> = ({ onDone }) => {
 
         setLoading(true);
         try {
-            await api.post('/api/auth/password/reset', { token, password });
+            await api.post('/api/auth/password/reset', IS_FIREBASE ? { oobCode: token, password } : { token, password });
             setDone(true);
         } catch (err: unknown) {
             const message = err instanceof Error ? err.message : '';
@@ -114,11 +129,11 @@ const ResetPassword: React.FC<{ onDone: () => void }> = ({ onDone }) => {
 
                             <Button
                                 type="submit"
-                                disabled={loading}
+                                disabled={loading || verifying || !verified}
                                 className="w-full h-12 text-body-sm font-semibold"
                                 size="lg"
                             >
-                                {loading ? t('common:states.loading') : t('auth:reset.submit')}
+                                {loading || verifying ? t('common:states.loading') : t('auth:reset.submit')}
                             </Button>
                             <button
                                 type="button"

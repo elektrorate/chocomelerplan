@@ -74,8 +74,8 @@ export default {
                 },
             },
             fontFamily: {
-                sans: ['Instrument Sans', 'system-ui', '-apple-system', 'Segoe UI', 'Roboto', 'Helvetica', 'Arial', 'sans-serif'],
-                serif: ['Fraunces', 'Georgia', 'Cambria', 'Times New Roman', 'serif'],
+                sans: ['Plus Jakarta Sans', 'Instrument Sans', 'system-ui', 'sans-serif'],
+                serif: ['Playfair Display', 'Fraunces', 'Georgia', 'serif'],
             },
             fontSize: {
                 display: ['28px', { lineHeight: '32px', fontWeight: '600' }],

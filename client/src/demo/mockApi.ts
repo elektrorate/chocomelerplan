@@ -2,8 +2,14 @@
 // persistence: the store is recreated on every page load. It mirrors the shape
 // of the real API responses ({ success, data }).
 import { createSeed, type DemoStore } from './seed';
+import { penaltySummary, type Penalty, type PenaltyMember, type PenaltyTask } from '../lib/penalties';
 
 let store: DemoStore = createSeed();
+let dashboardPrefs = {
+    order: ['stats', 'agenda', 'planning', 'quick', 'notes'],
+    hidden: [] as string[],
+    agendaView: 'day',
+};
 
 // Family-customizable category lists (mirrors /api/categories). Reset on reload,
 // like everything else in the demo. Keep in sync with hooks/useCategories.ts.
@@ -181,6 +187,31 @@ function taskStats() {
     return { total, completed, pending, completionRate: total ? Math.round((completed / total) * 100) : 0, byPriority };
 }
 
+function penaltiesSummary() {
+    return penaltySummary(store.tasks as unknown as PenaltyTask[], store.familyMembers as unknown as PenaltyMember[], store.penalties);
+}
+
+function requireAdult() {
+    if (!store.user.is_owner && store.user.role !== 'parent') {
+        throw new Error('Solo un adulto puede gestionar las penalidades.');
+    }
+}
+
+function penaltyAmount(body: Json) {
+    if (body.penalty_amount === undefined) return;
+    requireAdult();
+    if (![0, 5, 10].includes(body.penalty_amount as number)) {
+        throw new Error('La penalidad debe ser Sin penalidad, 5 EUR o 10 EUR.');
+    }
+}
+
+function penaltyReason(body: Json): string {
+    if (body.reason !== undefined && typeof body.reason !== 'string') throw new Error('El motivo debe ser un texto.');
+    const reason = String(body.reason || '').trim();
+    if (reason.length > 500) throw new Error('El motivo no puede superar los 500 caracteres.');
+    return reason;
+}
+
 // Pointing status is tracked per month/year, like the server's
 // recurring_expense_logs table. The seed's is_pointed flags are the baseline
 // for the current month; other months start unpointed.
@@ -305,6 +336,17 @@ async function route(method: string, path: string, q: Record<string, string>, bo
 
     // ── Auth ──────────────────────────────────────────────────────────────────
     if (path === '/api/auth/me') return ok({ user: store.user });
+    if (path === '/api/auth/dashboard-prefs') {
+        if (method === 'PUT') {
+            dashboardPrefs = {
+                order: Array.isArray(body.order) ? body.order as string[] : dashboardPrefs.order,
+                hidden: Array.isArray(body.hidden) ? body.hidden as string[] : dashboardPrefs.hidden,
+                agendaView: body.agendaView === 'week' ? 'week' : 'day',
+            };
+        }
+        return ok(dashboardPrefs);
+    }
+    if (path === '/api/posts/latest') return ok(null);
     if (path === '/api/auth/login' || path === '/api/auth/register' || path === '/api/auth/refresh' || path === '/api/invites/join' || path === '/api/invites/leave')
         return ok({ token: 'demo-token', user: store.user });
     if (path === '/api/auth/currency') { store.user = { ...store.user, currency: body.currency }; return ok({ user: store.user }); }
@@ -383,8 +425,14 @@ async function route(method: string, path: string, q: Record<string, string>, bo
     }
 
     // ── Tasks ─────────────────────────────────────────────────────────────────
-    if (path === '/api/tasks' && method === 'GET') return ok(store.tasks);
-    if (path === '/api/tasks' && method === 'POST') return ok(create('tasks', { is_completed: false, points: 0, pending_approval: false, ...body }));
+    if (path === '/api/tasks' && method === 'GET') return ok(store.tasks.map(task => ({
+        ...task,
+        assigned_to_members: ((task.assigned_to as string[]) || []).map(id => store.familyMembers.find(member => member.id === id)).filter(Boolean),
+    })));
+    if (path === '/api/tasks' && method === 'POST') {
+        penaltyAmount(body);
+        return ok(create('tasks', { is_completed: false, points: 0, pending_approval: false, penalty_amount: 0, ...body }));
+    }
     if (path === '/api/tasks/statistics') return ok(taskStats());
     // Parent approval of a child-completed chore (the demo account is a parent).
     if (seg[1] === 'tasks' && seg.length === 4 && (seg[3] === 'approve' || seg[3] === 'reject') && method === 'POST') {
@@ -398,6 +446,7 @@ async function route(method: string, path: string, q: Record<string, string>, bo
     }
     if (seg[1] === 'tasks' && seg.length === 3) {
         if (method === 'PUT') {
+            penaltyAmount(body);
             const existing = (store.tasks as Json[]).find((x) => x.id === seg[2]);
             const wasCompleted = Boolean(existing?.is_completed);
             const updated = update('tasks', seg[2], body);
@@ -421,6 +470,37 @@ async function route(method: string, path: string, q: Record<string, string>, bo
         }
         if (method === 'DELETE') { remove('tasks', seg[2]); return ok({}); }
     }
+
+    // Penalties are immutable review snapshots, separate from task completion.
+    if (path === '/api/penalties' && method === 'GET') return ok(penaltiesSummary());
+    if (path === '/api/penalties/review' && method === 'POST') {
+        requireAdult();
+        const reason = penaltyReason(body);
+        if (body.status !== 'pending' && body.status !== 'forgiven') throw new Error('Selecciona confirmar o perdonar.');
+        if (store.penalties.some(record => record.occurrence_key === body.occurrence_key)) {
+            throw new Error('Este incumplimiento ya ha sido revisado.');
+        }
+        const proposal = penaltiesSummary().review.find(entry => entry.occurrence_key === body.occurrence_key);
+        if (!proposal) throw new Error('La tarea ya no está incumplida o ha cambiado su vencimiento o responsable. Actualiza la lista.');
+        const record: Penalty = {
+            ...proposal, id: uid(), status: body.status, reviewed_at: new Date().toISOString(),
+            reviewed_by: String(store.user.name), reason,
+        };
+        store.penalties.unshift(record);
+        return ok({ ...record });
+    }
+    if (seg[1] === 'penalties' && seg.length === 4 && seg[3] === 'pay' && method === 'POST') {
+        requireAdult();
+        const reason = penaltyReason(body);
+        const record = store.penalties.find(entry => entry.id === seg[2]);
+        if (!record || record.status !== 'pending') throw new Error('Solo se pueden marcar como pagadas las penalidades pendientes.');
+        record.status = 'paid';
+        record.paid_at = new Date().toISOString();
+        record.paid_by = String(store.user.name);
+        record.payment_reason = reason;
+        return ok({ ...record });
+    }
+    if (seg[1] === 'penalties') throw new Error('Acción de penalidades no disponible.');
 
     // ── Rewards ─────────────────────────────────────────────────────────────────
     if (path === '/api/rewards/summary') return ok(rewardsSummary());
@@ -558,33 +638,28 @@ async function route(method: string, path: string, q: Record<string, string>, bo
         // anyway), so return a canned parsed recipe after a realistic delay.
         await new Promise((resolve) => setTimeout(resolve, 900));
         return ok({
-            name: 'Ratatouille traditionnelle',
+            name: 'Ratatouille tradicional',
             category: 'Plat',
-            description: 'La ratatouille provençale mijotée : des légumes du soleil fondants, parfumés au thym et à l\'huile d\'olive.',
+            description: 'Verduras guisadas a fuego lento con tomillo y aceite de oliva.',
             ingredients: [
-                '2 aubergines',
-                '3 courgettes',
-                '2 poivrons (1 rouge, 1 jaune)',
-                '4 tomates bien mûres',
-                '2 oignons',
-                '3 gousses d\'ail',
-                '4 c. à soupe d\'huile d\'olive',
-                '1 bouquet garni (thym, laurier)',
-                'Sel et poivre du moulin',
+                '2 berenjenas', '3 calabacines', '2 pimientos (1 rojo y 1 amarillo)',
+                '4 tomates maduros', '2 cebollas', '3 dientes de ajo',
+                '4 cucharadas de aceite de oliva', '1 ramillete de tomillo y laurel',
+                'Sal y pimienta',
             ],
             instructions: [
-                'Laver et couper tous les légumes en dés réguliers.',
-                'Faire revenir les oignons et l\'ail émincés dans l\'huile d\'olive.',
-                'Ajouter les poivrons, puis les aubergines et les courgettes, et faire dorer 10 minutes.',
-                'Incorporer les tomates concassées et le bouquet garni, saler et poivrer.',
-                'Couvrir et laisser mijoter 45 minutes à feu doux en remuant de temps en temps.',
-                'Rectifier l\'assaisonnement et servir bien chaud, ou tiède avec un filet d\'huile d\'olive.',
+                'Lava y corta las verduras en dados.',
+                'Sofríe la cebolla y el ajo picados en aceite de oliva.',
+                'Añade los pimientos, las berenjenas y los calabacines; dora durante 10 minutos.',
+                'Incorpora el tomate y las hierbas, y salpimienta.',
+                'Tapa y cocina a fuego lento durante 45 minutos, removiendo de vez en cuando.',
+                'Rectifica de sal y sirve caliente o templado con un chorrito de aceite de oliva.',
             ],
             prep_time: 25,
             cook_time: 55,
             servings: 6,
             difficulty: null,
-            tags: ['provençal', 'légumes', 'été', 'végétarien'],
+            tags: ['provenzal', 'verduras', 'verano', 'vegetariana'],
             image_url: null,
         });
     }
@@ -701,7 +776,7 @@ async function route(method: string, path: string, q: Record<string, string>, bo
         // proposals from the note so the review→confirm flow can be demoed.
         await new Promise((resolve) => setTimeout(resolve, 900));
         const text = String(body.text || '').trim();
-        const firstWords = text.split(/\s+/).slice(0, 4).join(' ') || 'Lasagnes';
+        const firstWords = text.split(/\s+/).slice(0, 4).join(' ') || 'Lasaña';
         const label = firstWords.charAt(0).toUpperCase() + firstWords.slice(1);
         const tomorrow = new Date();
         tomorrow.setDate(tomorrow.getDate() + 1);
@@ -709,7 +784,7 @@ async function route(method: string, path: string, q: Record<string, string>, bo
         return ok({
             items: [
                 { type: 'shopping_item', name: label, category: 'Alimentation', quantity: null, unit: null },
-                { type: 'task', title: `Rappel : ${label}`, description: null, due_date: tomorrowIso, priority: 'Moyenne', frequency: 'Une fois', assigned_to: ['m-kid1'], member_names: ['Mia'] },
+                { type: 'task', title: `Recordatorio: ${label}`, description: null, due_date: tomorrowIso, priority: 'Moyenne', frequency: 'Une fois', assigned_to: ['m-kid1'], member_names: ['Mia'] },
             ],
         });
     }
@@ -737,7 +812,7 @@ async function route(method: string, path: string, q: Record<string, string>, bo
 
     // ── Integrations ────────────────────────────────────────────────────────────
     if (path === '/api/integrations' && method === 'GET') return ok(store.integrations);
-    if (path === '/api/integrations/test') return { success: true, message: 'Connection successful (demo).' };
+    if (path === '/api/integrations/test') return { success: true, message: 'Conexión correcta (demo).' };
     if (path === '/api/integrations' && method === 'POST') return ok(create('integrations', { display_name: body.type, base_url: body.base_url, status: 'connected', last_synced_at: new Date().toISOString(), last_error: null, ...body }));
     if (seg[1] === 'integrations' && seg[3] === 'sync') return ok({});
     if (seg[1] === 'integrations' && seg.length === 3 && method === 'DELETE') { remove('integrations', seg[2]); return ok({}); }

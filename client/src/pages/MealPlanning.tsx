@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useWebSocketUpdates } from '../hooks/useWebSocketUpdates';
 import { api } from '../lib/api';
+import { IS_FIREBASE } from '../lib/firebase/config';
 import { Plus, ChevronLeft, ChevronRight, Edit2, Trash2, ShoppingCart, Sparkles, Loader2, UtensilsCrossed, Download } from 'lucide-react';
 import { Card, CardContent, Button, Dialog, Input, Select, Textarea, useToast } from '../components/ui';
 import { format, startOfWeek, endOfWeek, eachDayOfInterval, addWeeks, subWeeks, isToday } from 'date-fns';
@@ -25,6 +26,10 @@ interface MealPlan {
 }
 
 interface Recipe {
+    readOnly?: boolean;
+    archived?: boolean;
+    deleted_at?: string;
+    archived_at?: string;
     id: string;
     name: string;
     category: string;
@@ -39,7 +44,8 @@ interface IngredientLine {
     alreadyOnList: boolean;
 }
 
-const MEAL_TYPES = ['Petit-déjeuner', 'Déjeuner', 'Dîner', 'Snack'];
+const MEAL_TYPES = ['Petit-déjeuner', 'Déjeuner'];
+const combinedMealType = (type: string) => type === 'Dîner' ? 'Déjeuner' : type;
 
 // One Tandoor meal plan entry, as returned by GET /api/integrations/tandoor/meal-plan.
 interface TandoorMealEntry {
@@ -57,9 +63,9 @@ interface TandoorMealEntry {
 const guessMealType = (tandoorType: string): string => {
     const name = foldText(tandoorType);
     if (/(petit|breakfast|brunch|matin|morning|desayuno|cafe da manha|pequeno almoco|завтрак|早)/.test(name)) return 'Petit-déjeuner';
-    if (/(gouter|snack|collation|encas|merienda|lanche|перекус|点心|加餐|零食)/.test(name)) return 'Snack';
+    if (/(gouter|snack|collation|encas|merienda|lanche|перекус|点心|加餐|零食)/.test(name)) return '';
     if (/(midi|lunch|dejeuner|almuerzo|comida|almoco|обед|午)/.test(name)) return 'Déjeuner';
-    if (/(soir|diner|dinner|supper|souper|cena|jantar|ужин|晚)/.test(name)) return 'Dîner';
+    if (/(soir|diner|dinner|supper|souper|cena|jantar|ужин|晚)/.test(name)) return 'Déjeuner';
     return '';
 };
 
@@ -72,7 +78,7 @@ interface MealProposal {
 
 const MealPlanning: React.FC = () => {
     const { t } = useTranslation(['meals', 'recipes', 'common', 'ai']);
-    const mealTypeLabel = (v: string) => t(`meals:mealTypes.${v}`, { defaultValue: v });
+    const mealTypeLabel = (v: string) => combinedMealType(v) === 'Déjeuner' ? 'Almuerzo y cena' : t(`meals:mealTypes.${v}`, { defaultValue: v });
     const recipeCategoryLabel = (v: string) => t(`recipes:categories.${v}`, { defaultValue: v });
     const [currentWeek, setCurrentWeek] = useState(new Date());
     const [mealPlans, setMealPlans] = useState<MealPlan[]>([]);
@@ -107,7 +113,8 @@ const MealPlanning: React.FC = () => {
     const [tandoorMapping, setTandoorMapping] = useState<Record<string, string>>({});
     const [tandoorOverwrite, setTandoorOverwrite] = useState(false);
     const [tandoorImporting, setTandoorImporting] = useState(false);
-    const canImportTandoor = tandoorAvailable && user?.role !== 'enfant';
+    const canImportTandoor = !IS_FIREBASE && tandoorAvailable && user?.role !== 'enfant';
+    const canManage = !IS_FIREBASE || Boolean(user && (user.is_owner || user.role !== 'enfant'));
 
     const [formData, setFormData] = useState({
         meal_type: 'Déjeuner',
@@ -121,6 +128,7 @@ const MealPlanning: React.FC = () => {
         loadRecipes();
     }, [currentWeek]);
     useEffect(() => {
+        if (IS_FIREBASE) return;
         // The import button only makes sense once Tandoor is connected.
         api.get<{ success: boolean; data: Array<{ type: string }> }>('/api/integrations')
             .then((response) => setTandoorAvailable(Boolean(response.success && response.data.some((i) => i.type === 'tandoor'))))
@@ -167,7 +175,7 @@ const MealPlanning: React.FC = () => {
         try {
             const payload = {
                 date: format(selectedDate, 'yyyy-MM-dd'),
-                meal_type: formData.meal_type,
+                meal_type: combinedMealType(formData.meal_type),
                 recipe_id: formData.recipe_id || null,
                 custom_meal: formData.custom_meal || null,
                 notes: formData.notes || null,
@@ -199,12 +207,13 @@ const MealPlanning: React.FC = () => {
     };
 
     const handleEdit = (meal: MealPlan) => {
+        if (!canManage) return;
         setEditingMeal(meal);
         // Use noon to avoid timezone shifts when parsing date strings
         setSelectedDate(new Date(meal.date + 'T12:00:00'));
-        setSelectedMealType(meal.meal_type);
+        setSelectedMealType(combinedMealType(meal.meal_type));
         setFormData({
-            meal_type: meal.meal_type,
+            meal_type: combinedMealType(meal.meal_type),
             recipe_id: meal.recipe_id || '',
             custom_meal: meal.custom_meal || '',
             notes: meal.notes || '',
@@ -214,6 +223,7 @@ const MealPlanning: React.FC = () => {
     };
 
     const handleAddMeal = (date: Date, mealType: string) => {
+        if (!canManage) return;
         setEditingMeal(null);
         setSelectedDate(date);
         setSelectedMealType(mealType);
@@ -382,7 +392,7 @@ const MealPlanning: React.FC = () => {
             try {
                 await api.post('/api/meal-plans', {
                     date: proposal.date,
-                    meal_type: proposal.meal_type,
+                    meal_type: combinedMealType(proposal.meal_type),
                     recipe_id: proposal.recipe_id,
                 });
                 added += 1;
@@ -495,8 +505,8 @@ const MealPlanning: React.FC = () => {
 
     const getMealForSlot = (date: Date, mealType: string) => {
         const dateStr = format(date, 'yyyy-MM-dd');
-        return mealPlans.find(
-            (meal) => meal.date === dateStr && meal.meal_type === mealType
+        return mealPlans.filter(
+            (meal) => meal.date === dateStr && combinedMealType(meal.meal_type) === mealType
         );
     };
 
@@ -558,17 +568,17 @@ const MealPlanning: React.FC = () => {
                     >
                         <ChevronRight className="w-4 h-4" />
                     </Button>
-                    <Button size="sm" onClick={openShoppingDialog}>
+                    {canManage && <Button size="sm" onClick={openShoppingDialog}>
                         <ShoppingCart className="w-4 h-4 mr-2" />
                         {t('meals:shopping.button')}
-                    </Button>
+                    </Button>}
                     {canImportTandoor && (
                         <Button size="sm" variant="secondary" onClick={() => void openTandoorDialog()}>
                             <Download className="w-4 h-4 mr-2" />
                             {t('meals:tandoor.button')}
                         </Button>
                     )}
-                    {aiEnabled && isModuleEnabled('ai') && (
+                    {!IS_FIREBASE && aiEnabled && isModuleEnabled('ai') && (
                         <Button size="sm" variant="secondary" onClick={() => void handleSuggestMeals()}>
                             <Sparkles className="w-4 h-4 mr-2 text-primary" />
                             {t('ai:meals.button')}
@@ -576,6 +586,7 @@ const MealPlanning: React.FC = () => {
                     )}
                 </div>
             </div>
+            {IS_FIREBASE && <p className="text-caption text-muted-foreground">Spark permite varios platos por desayuno o almuerzo y cena. Tandoor e IA no están disponibles.{!canManage && ' Solo los adultos pueden modificar el menú.'}</p>}
 
             <Card>
                 <CardContent className="p-4 sm:p-6">
@@ -600,13 +611,13 @@ const MealPlanning: React.FC = () => {
                                 </p>
                                 <div className="space-y-1.5">
                                     {MEAL_TYPES.map((mealType) => {
-                                        const meal = getMealForSlot(day, mealType);
-                                        return (
+                                        const slotMeals = getMealForSlot(day, mealType);
+                                        return <div key={`${day.toISOString()}-${mealType}`} className="space-y-2">{(slotMeals.length ? slotMeals : [undefined]).map((meal) => (
                                             <div
-                                                key={mealType}
-                                                role="button"
-                                                tabIndex={0}
-                                                className={`flex min-h-[44px] cursor-pointer items-center gap-3 rounded-lg border bg-gradient-to-br px-3 py-1.5 ${getMealTypeColor(mealType)}`}
+                                                key={meal?.id || mealType}
+                                                role={canManage ? 'button' : undefined}
+                                                tabIndex={canManage ? 0 : -1}
+                                                className={`flex min-h-[44px] ${canManage ? 'cursor-pointer' : ''} items-center gap-3 rounded-lg border bg-gradient-to-br px-3 py-1.5 ${getMealTypeColor(mealType)}`}
                                                 onClick={() => (meal ? handleEdit(meal) : handleAddMeal(day, mealType))}
                                                 onKeyDown={(e) => {
                                                     if (e.key === 'Enter') meal ? handleEdit(meal) : handleAddMeal(day, mealType);
@@ -620,7 +631,7 @@ const MealPlanning: React.FC = () => {
                                                         <span className="min-w-0 flex-1 break-words text-body-sm font-medium">
                                                             {meal.recipe?.name || meal.custom_meal}
                                                         </span>
-                                                        <button
+                                                        {canManage && <button
                                                             type="button"
                                                             title={t('common:actions.delete')}
                                                             aria-label={t('common:actions.delete')}
@@ -631,13 +642,13 @@ const MealPlanning: React.FC = () => {
                                                             className="-mr-1.5 flex h-8 w-8 flex-shrink-0 items-center justify-center rounded hover:bg-card/70"
                                                         >
                                                             <Trash2 className="h-3.5 w-3.5 text-red-500" />
-                                                        </button>
+                                                        </button>}
                                                     </>
                                                 ) : (
                                                     <Plus className="ml-auto h-4 w-4 opacity-40" />
                                                 )}
                                             </div>
-                                        );
+                                        ))}{IS_FIREBASE && canManage && slotMeals.length > 0 && <Button variant="ghost" size="sm" onClick={() => handleAddMeal(day, mealType)}><Plus className="mr-1 h-3 w-3" />Añadir otro plato</Button>}</div>;
                                     })}
                                 </div>
                             </div>
@@ -669,13 +680,13 @@ const MealPlanning: React.FC = () => {
                                         {mealTypeLabel(mealType)}
                                     </div>
                                     {weekDays.map((day) => {
-                                        const meal = getMealForSlot(day, mealType);
-                                        return (
+                                        const slotMeals = getMealForSlot(day, mealType);
+                                        return <div key={`${day.toISOString()}-${mealType}`} className="space-y-2">{(slotMeals.length ? slotMeals : [undefined]).map((meal) => (
                                             <div
-                                                key={`${day.toISOString()}-${mealType}`}
+                                                key={meal?.id || `${day.toISOString()}-${mealType}`}
                                                 className={`min-h-[80px] p-2 rounded-lg border bg-gradient-to-br ${getMealTypeColor(
                                                     mealType
-                                                )} ${meal ? 'cursor-pointer hover:shadow-md' : 'cursor-pointer hover:bg-opacity-80'
+                                                )} ${!canManage ? '' : meal ? 'cursor-pointer hover:shadow-md' : 'cursor-pointer hover:bg-opacity-80'
                                                     } transition-all`}
                                                 onClick={() =>
                                                     meal ? handleEdit(meal) : handleAddMeal(day, mealType)
@@ -691,7 +702,7 @@ const MealPlanning: React.FC = () => {
                                                                 {meal.notes}
                                                             </div>
                                                         )}
-                                                        <div className="flex gap-1 mt-2">
+                                                        {canManage && <div className="flex gap-1 mt-2">
                                                             <button
                                                                 onClick={(e) => {
                                                                     e.stopPropagation();
@@ -710,7 +721,7 @@ const MealPlanning: React.FC = () => {
                                                             >
                                                                 <Trash2 className="h-3 w-3 text-red-500" />
                                                             </button>
-                                                        </div>
+                                                        </div>}
                                                     </div>
                                                 ) : (
                                                     <div className="flex items-center justify-center h-full opacity-40">
@@ -718,7 +729,7 @@ const MealPlanning: React.FC = () => {
                                                     </div>
                                                 )}
                                             </div>
-                                        );
+                                        ))}{IS_FIREBASE && canManage && slotMeals.length > 0 && <Button variant="ghost" size="sm" className="h-auto whitespace-normal text-left" onClick={() => handleAddMeal(day, mealType)}><Plus className="mr-1 h-3 w-3 shrink-0" />Añadir otro plato</Button>}</div>;
                                     })}
                                 </div>
                             ))}
@@ -742,6 +753,7 @@ const MealPlanning: React.FC = () => {
                 }
             >
                 <form onSubmit={handleSubmit} className="space-y-4">
+                    {error && <p role="alert" className="text-caption text-danger">{error}</p>}
                     <div>
                         <label className="block text-label font-medium text-foreground mb-1.5">
                             {t('meals:form.mealType')}
@@ -774,6 +786,7 @@ const MealPlanning: React.FC = () => {
                             options={[
                                 { value: '', label: t('meals:form.noRecipe') },
                                 ...recipes
+                                    .filter(recipe => !IS_FIREBASE || recipe.id === editingMeal?.recipe_id || (!recipe.readOnly && !recipe.archived && !recipe.deleted_at && !recipe.archived_at))
                                     // The chosen recipe stays in the menu even when the
                                     // search no longer matches it, so the field keeps its label.
                                     .filter((recipe) => recipe.id === formData.recipe_id

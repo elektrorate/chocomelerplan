@@ -4,11 +4,15 @@ import React, {
     useEffect,
     useRef,
     useCallback,
+    useState,
     ReactNode,
 } from 'react';
 import { useAuth } from './AuthContext';
+import { useLocation } from 'react-router-dom';
 import { api } from '../lib/api';
 import { wsBase } from '../lib/serverConfig';
+import { IS_DEMO, IS_FIREBASE } from '../lib/firebase/config';
+import { FIREBASE_REALTIME_EVENT, subscribeFirebaseEntity, subscribeFirebaseFamily } from '../lib/firebase/transport';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -48,7 +52,6 @@ const WebSocketContext = createContext<WebSocketContextType | undefined>(undefin
 
 // The WebSocket base is resolved by `wsBase()` (serverConfig): same-origin on the
 // web, derived from the configured server URL in the native app.
-const IS_DEMO = Boolean(import.meta.env.VITE_DEMO);
 
 const RECONNECT_DELAY_MS = 2_000;
 const RECONNECT_MAX_DELAY_MS = 30_000;
@@ -58,6 +61,8 @@ const PING_INTERVAL_MS = 25_000;
 
 export const WebSocketProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
     const { user } = useAuth();
+    const { pathname } = useLocation();
+    const [realtimeError, setRealtimeError] = useState<string | null>(null);
 
     // Map entity → set of subscriber callbacks
     const subscribers = useRef<Map<WsEntity, Set<Subscriber>>>(new Map());
@@ -84,7 +89,7 @@ export const WebSocketProvider: React.FC<{ children: ReactNode }> = ({ children 
     };
 
     const connect = useCallback(() => {
-        if (unmounted.current || !user || IS_DEMO) return;
+        if (unmounted.current || !user || IS_DEMO || IS_FIREBASE) return;
 
         // Close any existing socket
         if (wsRef.current) {
@@ -143,6 +148,7 @@ export const WebSocketProvider: React.FC<{ children: ReactNode }> = ({ children 
 
     // Connect when user is available, disconnect on logout
     useEffect(() => {
+        if (IS_FIREBASE) return;
         unmounted.current = false;
 
         if (user) {
@@ -163,7 +169,32 @@ export const WebSocketProvider: React.FC<{ children: ReactNode }> = ({ children 
         };
     }, [user, connect]);
 
+    useEffect(() => {
+        if (!IS_FIREBASE || !user?.family_id) { setRealtimeError(null); return; }
+        const onStatus = (event: Event) => {
+            const detail = (event as CustomEvent).detail;
+            setRealtimeError(detail.status === 'connected' ? null : detail.message || 'Sin conexion en tiempo real. Intentando reconectar.');
+        };
+        const onOffline = () => setRealtimeError('Sin conexion. Las acciones solo se guardan cuando el servidor las confirma.');
+        const onOnline = () => setRealtimeError('Conexion recuperada. Esperando la sincronizacion.');
+        window.addEventListener(FIREBASE_REALTIME_EVENT, onStatus);
+        window.addEventListener('offline', onOffline);
+        window.addEventListener('online', onOnline);
+        const unsubscribe = subscribeFirebaseFamily(user.family_id, entity => notify(entity as WsEntity));
+        if (!navigator.onLine) onOffline();
+        return () => {
+            unsubscribe();
+            window.removeEventListener(FIREBASE_REALTIME_EVENT, onStatus);
+            window.removeEventListener('offline', onOffline);
+            window.removeEventListener('online', onOnline);
+        };
+    }, [user?.id, user?.family_id, user?.role, user?.is_owner, user?.member_id, notify]);
+
     const subscribe = useCallback((entity: WsEntity, cb: Subscriber): (() => void) => {
+        if (IS_FIREBASE) {
+            const pageEntity = entity === 'tasks' && pathname === '/rewards' ? 'rewards' : entity;
+            return user?.family_id ? subscribeFirebaseEntity(user.family_id, pageEntity, cb) : () => {};
+        }
         if (!subscribers.current.has(entity)) {
             subscribers.current.set(entity, new Set());
         }
@@ -172,10 +203,15 @@ export const WebSocketProvider: React.FC<{ children: ReactNode }> = ({ children 
         return () => {
             subscribers.current.get(entity)?.delete(cb);
         };
-    }, []);
+    }, [user?.id, user?.family_id, user?.role, user?.is_owner, user?.member_id, pathname]);
 
     return (
         <WebSocketContext.Provider value={{ subscribe }}>
+            {IS_FIREBASE && user?.family_id && realtimeError && (
+                <div role="status" className="border-b border-border bg-card px-4 py-2 text-center text-body-sm text-destructive">
+                    {realtimeError}
+                </div>
+            )}
             {children}
         </WebSocketContext.Provider>
     );

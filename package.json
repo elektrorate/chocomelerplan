@@ -24,12 +24,20 @@
     "docker:build": "docker-compose build",
     "smoke:api": "bash ./scripts/smoke-api.sh",
     "install:all": "npm install && cd client && npm install && cd ../server && npm install && cd ../shared && npm install",
-    "check:i18n": "cd client && npm run check:i18n"
+    "check:i18n": "cd client && npm run check:i18n",
+    "dev:firebase": "npm run dev --workspace=@openfamily/client -- --mode emulator --host 127.0.0.1 --port 6513 --strictPort",
+    "emulators": "firebase emulators:start --only auth,firestore --project demo-chocomelerplan",
+    "test:firebase:rules": "node --test firebase/test/rules.test.mjs",
+    "test:firebase": "firebase emulators:exec --only auth,firestore --project demo-chocomelerplan \"node --test firebase/test/rules.test.mjs\"",
+    "build:vercel": "node scripts/check-firebase-build.mjs && npm run build:shared && npm run build:client"
   },
   "devDependencies": {
-    "concurrently": "^8.2.2"
+    "concurrently": "^8.2.2",
+    "@firebase/rules-unit-testing": "5.0.2",
+    "firebase-tools": "15.32.1"
   },
   "overrides": {
+    "@grpc/grpc-js": "1.14.5",
     "serialize-javascript": "7.0.5",
     "@babel/core": "^7.29.6",
     "esbuild": "^0.28.1",

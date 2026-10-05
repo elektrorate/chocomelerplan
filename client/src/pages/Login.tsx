@@ -99,7 +99,7 @@ const Login: React.FC = () => {
             <Card className="w-full max-w-md" hover={false}>
                 <CardHeader className="text-center pb-8 pt-8">
                     <div className="mx-auto mb-6">
-                        <img src={`${import.meta.env.BASE_URL}OpenFamily.png`} alt="OpenFamily" className="w-16 h-16 rounded-xl object-contain mx-auto" />
+                        <img src={`${import.meta.env.BASE_URL}chocomelerplan-logo.png`} alt="chocomelerplan" className="w-16 h-16 rounded-xl object-contain mx-auto" />
                     </div>
                     <CardTitle className="font-serif text-display mb-2">
                         Open<span className="text-primary">Family</span>

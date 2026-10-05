@@ -1,3 +1,12 @@
+# chocomelerplan
+
+Adaptacion de OpenFamily para organizacion familiar, recetas, tareas de cocina
+y penalidades, con Firebase Spark y despliegue web previsto en Vercel.
+La configuracion, verificaciones y limitaciones actuales estan en
+[docs/FIREBASE.md](docs/FIREBASE.md). El codigo conserva la licencia AGPL v3 y
+los avisos del proyecto original. La documentacion original se mantiene debajo;
+sus instrucciones Docker/PostgreSQL no corresponden al despliegue Firebase.
+
 <div align="center">
   <img src="client/public/OpenFamily.png" alt="OpenFamily" width="90">
   <h1>OpenFamily</h1>

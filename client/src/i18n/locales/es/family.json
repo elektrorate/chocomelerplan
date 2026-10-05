@@ -45,7 +45,7 @@
   "link": {
     "label": "Cuenta vinculada",
     "none": "Sin cuenta vinculada",
-    "hint": "Vincula este perfil a una cuenta compartida: una cuenta infantil verá su hucha y sus objetivos."
+    "hint": "Vincula este perfil a una cuenta compartida. Solo los adultos pueden revisar penalidades y registrar pagos."
   },
   "requests": {
     "title": "Solicitudes de acceso",

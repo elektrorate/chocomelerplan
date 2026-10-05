@@ -79,3 +79,10 @@ docs/config.php
 
 # Play Store assets (icone, captures, fiche) : local uniquement
 store/
+
+# Local Firebase emulator data and Vercel linkage, never production backups.
+.firebase/
+.vercel/
+firebase-emulator-data/
+firestore-debug.log
+ui-debug.log

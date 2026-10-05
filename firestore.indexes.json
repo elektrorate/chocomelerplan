@@ -1,0 +1,20 @@
+{
+  "indexes": [
+    { "collectionGroup": "tasks", "queryScope": "COLLECTION", "fields": [{ "fieldPath": "deleted_at", "order": "ASCENDING" }, { "fieldPath": "due_at", "order": "ASCENDING" }] },
+    { "collectionGroup": "tasks", "queryScope": "COLLECTION", "fields": [{ "fieldPath": "deleted_at", "order": "ASCENDING" }, { "fieldPath": "is_completed", "order": "ASCENDING" }, { "fieldPath": "due_at", "order": "ASCENDING" }] },
+    { "collectionGroup": "tasks", "queryScope": "COLLECTION", "fields": [{ "fieldPath": "deleted_at", "order": "ASCENDING" }, { "fieldPath": "is_completed", "order": "ASCENDING" }, { "fieldPath": "penalty_generated", "order": "ASCENDING" }, { "fieldPath": "due_at", "order": "ASCENDING" }] },
+    { "collectionGroup": "tasks", "queryScope": "COLLECTION", "fields": [{ "fieldPath": "assigned_to", "arrayConfig": "CONTAINS" }, { "fieldPath": "deleted_at", "order": "ASCENDING" }] },
+    { "collectionGroup": "tasks", "queryScope": "COLLECTION", "fields": [{ "fieldPath": "assigned_to", "arrayConfig": "CONTAINS" }, { "fieldPath": "deleted_at", "order": "ASCENDING" }, { "fieldPath": "due_at", "order": "ASCENDING" }] },
+    { "collectionGroup": "tasks", "queryScope": "COLLECTION", "fields": [{ "fieldPath": "assigned_to", "arrayConfig": "CONTAINS" }, { "fieldPath": "deleted_at", "order": "ASCENDING" }, { "fieldPath": "is_completed", "order": "ASCENDING" }] },
+    { "collectionGroup": "penalties", "queryScope": "COLLECTION", "fields": [{ "fieldPath": "status", "order": "ASCENDING" }, { "fieldPath": "generated_at", "order": "DESCENDING" }] },
+    { "collectionGroup": "penalties", "queryScope": "COLLECTION", "fields": [{ "fieldPath": "member_id", "order": "ASCENDING" }, { "fieldPath": "generated_at", "order": "DESCENDING" }] },
+    { "collectionGroup": "penalties", "queryScope": "COLLECTION", "fields": [{ "fieldPath": "member_id", "order": "ASCENDING" }, { "fieldPath": "status", "order": "ASCENDING" }, { "fieldPath": "generated_at", "order": "DESCENDING" }] },
+    { "collectionGroup": "recipes", "queryScope": "COLLECTION", "fields": [{ "fieldPath": "deleted_at", "order": "ASCENDING" }, { "fieldPath": "name", "order": "ASCENDING" }] },
+    { "collectionGroup": "members", "queryScope": "COLLECTION", "fields": [{ "fieldPath": "deleted_at", "order": "ASCENDING" }, { "fieldPath": "name", "order": "ASCENDING" }] },
+    { "collectionGroup": "mealPlans", "queryScope": "COLLECTION", "fields": [{ "fieldPath": "date", "order": "ASCENDING" }, { "fieldPath": "meal_type", "order": "ASCENDING" }] },
+    { "collectionGroup": "budgetEntries", "queryScope": "COLLECTION", "fields": [{ "fieldPath": "category", "order": "ASCENDING" }, { "fieldPath": "date", "order": "ASCENDING" }] },
+    { "collectionGroup": "shoppingItems", "queryScope": "COLLECTION", "fields": [{ "fieldPath": "is_checked", "order": "ASCENDING" }, { "fieldPath": "category", "order": "ASCENDING" }] },
+    { "collectionGroup": "planningEntries", "queryScope": "COLLECTION", "fields": [{ "fieldPath": "schedule_type", "order": "ASCENDING" }, { "fieldPath": "day_of_week", "order": "ASCENDING" }] }
+  ],
+  "fieldOverrides": []
+}

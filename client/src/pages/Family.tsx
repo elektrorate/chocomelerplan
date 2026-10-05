@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { useWebSocketUpdates } from '../hooks/useWebSocketUpdates';
 import { useAuth } from '../contexts/AuthContext';
 import { api } from '../lib/api';
+import { IS_FIREBASE } from '../lib/firebase/config';
 import { Plus, Edit2, Trash2, User, Phone, Heart, AlertTriangle, Users, Link2, Copy, LogOut, Crown, UserX, Check, UserPlus, Send, Clock, X } from 'lucide-react';
 import { Card, CardContent, Button, Dialog, Input, Select, Textarea, Badge } from '../components/ui';
 import { DEFAULT_FAMILY_COLOR, FAMILY_COLOR_PRESETS } from '../design/colorPresets';
@@ -76,6 +77,7 @@ const Family: React.FC = () => {
     const [inviteLinkLoading, setInviteLinkLoading] = useState(false);
     const [inviteRole, setInviteRole] = useState<'parent' | 'enfant'>('parent');
     const [inviteEmail, setInviteEmail] = useState('');
+    const [inviteMemberId, setInviteMemberId] = useState('');
     const [inviteNotice, setInviteNotice] = useState<{ kind: 'sent' | 'link'; email?: string } | null>(null);
     const [copied, setCopied] = useState(false);
     const [leavingFamily, setLeavingFamily] = useState(false);
@@ -100,7 +102,8 @@ const Family: React.FC = () => {
         linked_user_id: '',
     });
 
-    const isOwner = sharedAccounts.find((a) => a.id === user?.id)?.is_owner ?? true;
+    const isOwner = sharedAccounts.find((a) => a.id === user?.id)?.is_owner ?? (IS_FIREBASE ? Boolean(user?.is_owner) : true);
+    const canManageProfiles = !IS_FIREBASE || Boolean(user && (user.is_owner || user.role !== 'enfant'));
 
     useEffect(() => {
         loadMembers();
@@ -139,6 +142,7 @@ const Family: React.FC = () => {
     };
 
     const loadJoinData = async () => {
+        if (IS_FIREBASE) return;
         // Owner: pending requests addressed to me (403 for non-owners, ignore)
         try {
             const reqRes = await api.get<{ success: boolean; data: JoinRequest[] }>('/api/invites/requests');
@@ -213,6 +217,7 @@ const Family: React.FC = () => {
     };
 
     const handleGenerateInvite = async () => {
+        if (inviteLinkLoading) return;
         setInviteLinkLoading(true);
         setInviteNotice(null);
         setError('');
@@ -224,7 +229,7 @@ const Family: React.FC = () => {
             const response = await api.post<{
                 success: boolean;
                 data: { token: string; invite_url: string; email_sent: boolean | null };
-            }>('/api/invites', { role: inviteRole, ...(email ? { inviteeEmail: email } : {}) });
+            }>('/api/invites', { role: inviteRole, ...(email ? { inviteeEmail: email } : {}), ...(IS_FIREBASE && inviteMemberId ? { member_id: inviteMemberId } : {}) });
 
             if (response.success && response.data) {
                 setInviteLink(response.data.invite_url);
@@ -246,15 +251,20 @@ const Family: React.FC = () => {
 
     const handleCopyInvite = () => {
         if (!inviteLink) return;
+        if (!navigator.clipboard) {
+            setError('Selecciona el enlace y cópialo manualmente; el portapapeles no está disponible.');
+            return;
+        }
         navigator.clipboard.writeText(inviteLink).then(() => {
             setCopied(true);
             setTimeout(() => setCopied(false), 2000);
-        });
+        }).catch(() => setError('No se pudo copiar el enlace. Selecciónalo y cópialo manualmente.'));
     };
 
     const handleChangeMemberRole = async (userId: string, role: 'parent' | 'enfant') => {
         try {
             await api.put(`/api/invites/members/${userId}/role`, { role });
+            if (IS_FIREBASE) await refreshToken();
             await loadSharedAccounts();
         } catch (err) {
             setError(err instanceof Error ? err.message : t('family:errors.role'));
@@ -304,10 +314,13 @@ const Family: React.FC = () => {
 
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
+        if (!canManageProfiles) return;
         setError('');
         try {
+            const { linked_user_id, ...profileFields } = formData;
             const payload = {
-                ...formData,
+                ...profileFields,
+                ...(!IS_FIREBASE ? { linked_user_id } : {}),
                 allergies: formData.allergies ? formData.allergies.split(',').map((a) => a.trim()).filter((a) => a) : [],
                 medications: formData.medications ? formData.medications.split(',').map((m) => m.trim()).filter((m) => m) : [],
                 birthdate: formData.birthdate || null,
@@ -319,7 +332,7 @@ const Family: React.FC = () => {
             if (editingMember) {
                 await api.put(`/api/family/${editingMember.id}`, payload);
                 // Account link is a separate, owner-only endpoint - only call it on change.
-                if (isOwner && (formData.linked_user_id || '') !== (editingMember.linked_user_id || '')) {
+                if (!IS_FIREBASE && isOwner && (formData.linked_user_id || '') !== (editingMember.linked_user_id || '')) {
                     await api.put(`/api/family/${editingMember.id}/link`, {
                         user_id: formData.linked_user_id || null,
                     });
@@ -329,7 +342,7 @@ const Family: React.FC = () => {
             }
             setDialogOpen(false);
             resetForm();
-            loadMembers();
+            await loadMembers();
         } catch (error) {
             console.error('Failed to save family member:', error);
             setError(error instanceof Error ? error.message : t('family:errors.save'));
@@ -340,7 +353,8 @@ const Family: React.FC = () => {
         if (!confirm(t('family:confirm.delete'))) return;
         try {
             await api.delete(`/api/family/${id}`);
-            loadMembers();
+            await loadMembers();
+            if (IS_FIREBASE) await loadSharedAccounts();
         } catch (error) {
             console.error('Failed to delete family member:', error);
             setError(error instanceof Error ? error.message : t('family:errors.delete'));
@@ -414,11 +428,12 @@ const Family: React.FC = () => {
                     <h1 className="text-h1 mb-1">{t('family:title')}</h1>
                     <p className="text-muted-foreground text-body">{t('family:subtitle')}</p>
                 </div>
-                <Button onClick={() => { resetForm(); setDialogOpen(true); }}>
+                {canManageProfiles && <Button onClick={() => { resetForm(); setDialogOpen(true); }}>
                     <Plus className="w-4 h-4 mr-2" />
                     {t('family:addMember')}
-                </Button>
+                </Button>}
             </div>
+            {IS_FIREBASE && <p className="text-caption text-muted-foreground">Los perfiles organizan la familia; su rol descriptivo no concede acceso a una cuenta. Solo los adultos pueden editarlos. Los menores no ven fechas de nacimiento, datos de salud ni contactos privados.</p>}
 
             {members.length === 0 ? (
                 <Card>
@@ -444,7 +459,7 @@ const Family: React.FC = () => {
                                         <Badge variant="primary" className="mt-1">
                                             {roleLabel(member.role)}
                                         </Badge>
-                                        {member.birthdate && (
+                                        {canManageProfiles && member.birthdate && (
                                             <p className="text-body-sm text-muted-foreground mt-1">
                                                 {t('family:card.age', { count: calculateAge(member.birthdate) })}
                                             </p>
@@ -453,7 +468,7 @@ const Family: React.FC = () => {
                                 </div>
 
                                 {/* Health Information */}
-                                {(member.allergies && member.allergies.length > 0) || (member.medications && member.medications.length > 0) ? (
+                                {canManageProfiles && ((member.allergies && member.allergies.length > 0) || (member.medications && member.medications.length > 0)) ? (
                                     <div className="mb-4 p-3 bg-amber-50 border border-amber-200 rounded-lg">
                                         <div className="flex items-center gap-2 mb-2">
                                             <Heart className="h-4 w-4 text-amber-600" />
@@ -493,7 +508,7 @@ const Family: React.FC = () => {
                                 ) : null}
 
                                 {/* Emergency Contact */}
-                                {member.emergency_contact_name && (
+                                {canManageProfiles && member.emergency_contact_name && (
                                     <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg">
                                         <div className="flex items-center gap-2 mb-2">
                                             <AlertTriangle className="h-4 w-4 text-red-600" />
@@ -517,14 +532,14 @@ const Family: React.FC = () => {
                                 )}
 
                                 {/* Notes */}
-                                {member.notes && (
+                                {canManageProfiles && member.notes && (
                                     <div className="mb-4 p-3 bg-nexus-background rounded-lg">
                                         <p className="text-body-sm text-muted-foreground">{member.notes}</p>
                                     </div>
                                 )}
 
                                 {/* Actions */}
-                                <div className="flex gap-2 pt-2 border-t">
+                                {canManageProfiles && <div className="flex gap-2 pt-2 border-t">
                                     <Button
                                         variant="secondary"
                                         size="sm"
@@ -534,10 +549,10 @@ const Family: React.FC = () => {
                                         <Edit2 className="h-4 w-4 mr-1" />
                                         {t('common:actions.edit')}
                                     </Button>
-                                    <Button variant="ghost" size="sm" onClick={() => handleDelete(member.id)}>
+                                    {(!IS_FIREBASE || !member.linked_user_id) && <Button variant="ghost" size="sm" onClick={() => handleDelete(member.id)}>
                                         <Trash2 className="h-4 w-4 text-red-500" />
-                                    </Button>
-                                </div>
+                                    </Button>}
+                                </div>}
                             </CardContent>
                         </Card>
                     ))}
@@ -593,7 +608,7 @@ const Family: React.FC = () => {
                                                 </Badge>
                                             )}
                                             {/* Owner can kick non-owner members (except themselves) */}
-                                            {isOwner && !account.is_owner && (
+                                            {isOwner && !account.is_owner && (!IS_FIREBASE || account.role !== 'enfant') && (
                                                 <Button
                                                     variant="ghost"
                                                     size="sm"
@@ -670,7 +685,7 @@ const Family: React.FC = () => {
                         )}
 
                         {/* Lone account: request to join another family */}
-                        {isOwner && sharedAccounts.length <= 1 && (
+                        {!IS_FIREBASE && isOwner && sharedAccounts.length <= 1 && (
                             myRequest && myRequest.status === 'pending' ? (
                                 <Card hover={false}>
                                     <CardContent className="flex items-center gap-3 p-4">
@@ -734,9 +749,10 @@ const Family: React.FC = () => {
                                     <UserPlus className="w-4 h-4 text-nexus-blue" />
                                     <h3 className="text-body font-semibold">{t('family:invite.title')}</h3>
                                 </div>
-                                <p className="text-body-sm text-muted-foreground">{t('family:invite.desc')}</p>
+                                <p className="text-body-sm text-muted-foreground">{IS_FIREBASE ? 'Crea un enlace real de invitación y compártelo manualmente. Spark no envía correos ni solicitudes para unirse por email.' : t('family:invite.desc')}</p>
+                                {IS_FIREBASE && <p className="text-caption text-muted-foreground">El destinatario necesita una cuenta para aceptar. Si limitas el enlace a un correo, esa cuenta debe tenerlo verificado en Firebase Auth; esta versión no incluye una pantalla de verificación. Deja el correo vacío para un enlace sin esa restricción.</p>}
 
-                                <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
+                                <div className={`flex flex-col gap-2 sm:flex-row sm:items-end ${IS_FIREBASE ? 'sm:flex-wrap' : ''}`}>
                                     <div className="w-full sm:w-44">
                                         <label className="block text-label font-medium text-foreground mb-1.5">
                                             {t('family:invite.roleLabel')}
@@ -747,9 +763,16 @@ const Family: React.FC = () => {
                                             options={ACCOUNT_ROLES}
                                         />
                                     </div>
+                                    {IS_FIREBASE && <div className="w-full sm:w-56">
+                                        <label className="block text-label font-medium text-foreground mb-1.5" htmlFor="invite-profile">Perfil a vincular (opcional)</label>
+                                        <select id="invite-profile" value={inviteMemberId} onChange={event => setInviteMemberId(event.target.value)} className="w-full rounded-input border border-input bg-card px-3 py-2 text-body-sm">
+                                            <option value="">Crear un perfil al aceptar</option>
+                                            {members.filter(member => !member.linked_user_id).map(member => <option key={member.id} value={member.id}>{member.name}</option>)}
+                                        </select>
+                                    </div>}
                                     <div className="flex-1">
                                         <label className="block text-label font-medium text-foreground mb-1.5">
-                                            {t('family:invite.emailLabel')}
+                                            {IS_FIREBASE ? 'Restringir a un correo (opcional)' : t('family:invite.emailLabel')}
                                         </label>
                                         <Input
                                             type="email"
@@ -764,10 +787,10 @@ const Family: React.FC = () => {
                                         disabled={inviteLinkLoading}
                                         className="flex items-center justify-center gap-2"
                                     >
-                                        {inviteEmail.trim() ? <Send className="w-4 h-4" /> : <Link2 className="w-4 h-4" />}
+                                        {!IS_FIREBASE && inviteEmail.trim() ? <Send className="w-4 h-4" /> : <Link2 className="w-4 h-4" />}
                                         {inviteLinkLoading
                                             ? t('family:invite.generating')
-                                            : inviteEmail.trim() ? t('family:invite.send') : t('family:invite.generate')}
+                                            : IS_FIREBASE ? 'Crear enlace de invitación' : inviteEmail.trim() ? t('family:invite.send') : t('family:invite.generate')}
                                     </Button>
                                 </div>
 
@@ -799,7 +822,7 @@ const Family: React.FC = () => {
                                                 }
                                             </button>
                                         </div>
-                                        <p className="text-body-sm text-muted-foreground">{t('family:invite.linkHint')}</p>
+                                        <p className="text-body-sm text-muted-foreground">{IS_FIREBASE ? 'Comparte este enlace manualmente con el destinatario. Caduca a los 7 días y solo puede usarse una vez.' : t('family:invite.linkHint')}</p>
                                     </div>
                                 )}
                             </div>
@@ -829,6 +852,8 @@ const Family: React.FC = () => {
                 description={t('family:dialog.description')}
             >
                 <form onSubmit={handleSubmit} className="space-y-4">
+                    {error && <p role="alert" className="text-caption text-danger">{error}</p>}
+                    {IS_FIREBASE && <p className="text-caption text-muted-foreground">El rol de este perfil es descriptivo. Los permisos se asignan a la cuenta al invitarla; para vincular este perfil, selecciónalo en la invitación.</p>}
                     <Input
                         label={t('family:form.name')}
                         value={formData.name}
@@ -861,7 +886,7 @@ const Family: React.FC = () => {
                         onChange={(e) => setFormData({ ...formData, birthdate: e.target.value })}
                     />
                     {/* Owner only: link this profile to one of the family's shared accounts */}
-                    {editingMember && isOwner && sharedAccounts.length > 0 && (
+                    {!IS_FIREBASE && editingMember && isOwner && sharedAccounts.length > 0 && (
                         <div>
                             <label className="block text-label font-medium text-foreground mb-1.5">
                                 {t('family:link.label')}

@@ -24,17 +24,21 @@ export default defineConfig(({ mode }) => {
                 strategies: 'injectManifest',
                 srcDir: 'src',
                 filename: 'sw.js',
-                includeAssets: ['favicon-32x32.png', 'favicon-16x16.png', 'apple-touch-icon.png', 'OpenFamily.png'],
+                injectManifest: {
+                    // The app bundle includes the Firebase SDK and exceeds Workbox's 2 MiB default.
+                    maximumFileSizeToCacheInBytes: 3 * 1024 * 1024,
+                },
+                includeAssets: ['chocomelerplan-32.png', 'chocomelerplan-16.png', 'chocomelerplan-180.png', 'chocomelerplan-logo.png'],
                 manifest: {
-                    name: 'OpenFamily',
-                    short_name: 'OpenFamily',
+                    name: 'chocomelerplan',
+                    short_name: 'chocomelerplan',
                     description: 'Application de gestion familiale',
                     theme_color: '#DC4A60',
                     background_color: '#F7F2E9',
                     display: 'standalone',
                     icons: [
-                        { src: '/icon-192.png', sizes: '192x192', type: 'image/png' },
-                        { src: '/icon-512.png', sizes: '512x512', type: 'image/png' },
+                        { src: '/chocomelerplan-192.png', sizes: '192x192', type: 'image/png' },
+                        { src: '/chocomelerplan-512.png', sizes: '512x512', type: 'image/png' },
                     ],
                 },
                 devOptions: { enabled: false },

@@ -21,14 +21,11 @@ import {
     X,
     Plus,
     WifiOff,
-    Plug,
-    PiggyBank,
-    MessageSquare,
+    Scale,
 } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { Button } from '../ui/Button';
 import { NotificationBell } from '../ui/NotificationBell';
-import { DemoBanner } from '../app/DemoBanner';
 import { MagicInputButton } from '../app/MagicInput';
 
 interface LayoutProps {
@@ -38,24 +35,23 @@ interface LayoutProps {
 // `module` ties a nav entry to an optional module key (see TOGGLEABLE_MODULES on
 // the server). Entries without a `module` are always-on and can never be hidden.
 const navigation: { labelKey: string; href: string; icon: typeof Home; module?: string }[] = [
-    { labelKey: 'items.today', href: '/', icon: Home },
-    { labelKey: 'items.shopping', href: '/shopping', icon: ShoppingCart },
-    { labelKey: 'items.tasks', href: '/tasks', icon: CheckSquare },
-    { labelKey: 'items.posts', href: '/posts', icon: MessageSquare },
-    { labelKey: 'items.rewards', href: '/rewards', icon: PiggyBank, module: 'rewards' },
-    { labelKey: 'items.calendar', href: '/calendar', icon: CalendarIcon },
     { labelKey: 'items.planning', href: '/planning', icon: CalendarDays, module: 'planning' },
+    { labelKey: 'items.today', href: '/dashboard', icon: Home },
+    { labelKey: 'items.tasks', href: '/tasks', icon: ChefHat },
     { labelKey: 'items.recipes', href: '/recipes', icon: ChefHat, module: 'recipes' },
+    { labelKey: 'items.shopping', href: '/shopping', icon: ShoppingCart },
+    { labelKey: 'items.rewards', href: '/rewards', icon: Scale, module: 'rewards' },
+    { labelKey: 'items.calendar', href: '/calendar', icon: CalendarIcon },
     { labelKey: 'items.meals', href: '/meal-planning', icon: UtensilsCrossed, module: 'meals' },
     { labelKey: 'items.budget', href: '/budget', icon: Wallet, module: 'budget' },
     { labelKey: 'items.family', href: '/family', icon: Users },
-    { labelKey: 'items.integrations', href: '/integrations', icon: Plug, module: 'integrations' },
     { labelKey: 'items.settings', href: '/settings', icon: Settings },
 ];
 
 const mobileTabs: { labelKey: string; href: string; icon: typeof Home; module?: string }[] = [
-    { labelKey: 'mobile.home', href: '/', icon: Home },
     { labelKey: 'mobile.planning', href: '/planning', icon: CalendarDays, module: 'planning' },
+    { labelKey: 'mobile.home', href: '/dashboard', icon: Home },
+    { labelKey: 'items.tasks', href: '/tasks', icon: ChefHat },
     { labelKey: 'mobile.lists', href: '/shopping', icon: ShoppingCart },
     { labelKey: 'mobile.budget', href: '/budget', icon: Wallet, module: 'budget' },
     { labelKey: 'mobile.family', href: '/family', icon: Users },
@@ -64,7 +60,6 @@ const mobileTabs: { labelKey: string; href: string; icon: typeof Home; module?: 
 const quickActions: { labelKey: string; href: string; icon: typeof Home; module?: string }[] = [
     { labelKey: 'quickActions.addShopping', href: '/shopping', icon: ShoppingCart },
     { labelKey: 'quickActions.addTask', href: '/tasks', icon: CheckSquare },
-    { labelKey: 'quickActions.addPost', href: '/posts', icon: MessageSquare },
     { labelKey: 'quickActions.addAppointment', href: '/calendar', icon: CalendarIcon },
     { labelKey: 'quickActions.addSchedule', href: '/planning', icon: CalendarDays, module: 'planning' },
     { labelKey: 'quickActions.addRecipe', href: '/recipes', icon: ChefHat, module: 'recipes' },
@@ -135,8 +130,8 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
                 <div className="flex h-full flex-col">
                     <div className="flex h-20 items-center justify-between border-b border-border px-6">
                         <Link to="/" className="flex items-center gap-3" onClick={closeMenus}>
-                            <img src={`${import.meta.env.BASE_URL}OpenFamily.png`} alt="OpenFamily" className="h-9 w-9 object-contain" />
-                            <span className="text-lg font-semibold tracking-tight">OpenFamily</span>
+                            <img src={`${import.meta.env.BASE_URL}chocomelerplan-logo.png`} alt="chocomelerplan" className="h-9 w-9 object-contain" />
+                            <span className="text-lg font-semibold tracking-tight">chocomelerplan</span>
                         </Link>
                         <button
                             type="button"
@@ -223,7 +218,6 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
             </aside>
 
             <div className="lg:pl-72">
-                <DemoBanner />
                 <header className="sticky top-0 z-30 border-b border-border bg-background/90 backdrop-blur-md">
                     <div className="container flex h-16 max-w-[1200px] items-center justify-between px-4 lg:px-6">
                         <div className="flex items-center gap-3">
@@ -344,7 +338,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
                                 )}
                             >
                                 <Icon className="h-4 w-4 shrink-0" />
-                                <span className="text-[10px] font-medium leading-none whitespace-nowrap">{t(item.labelKey)}</span>
+                                <span className="text-center text-[10px] font-medium leading-tight">{t(item.labelKey)}</span>
                             </Link>
                         );
                     })}

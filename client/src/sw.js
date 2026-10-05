@@ -13,8 +13,7 @@ const precacheManifest = self.__WB_MANIFEST;
 // anciens caches a l'activation (voir handler 'activate'). Indispensable pour
 // eviter qu'un ancien bundle (ex. pointant vers une mauvaise URL d'API) reste
 // servi indefiniment apres une mise a jour de l'application.
-const CACHE_NAME = 'openfamily-v3';
-const API_CACHE_NAME = 'openfamily-api-v3';
+const CACHE_NAME = 'chocomelerplan-spark-v1';
 const OFFLINE_URL = '/index.html';
 
 sw.addEventListener('install', (event) => {
@@ -37,7 +36,7 @@ sw.addEventListener('activate', (event) => {
         caches.keys().then((keys) =>
             Promise.all(
                 keys
-                    .filter((k) => k !== CACHE_NAME && k !== API_CACHE_NAME)
+                    .filter((k) => k !== CACHE_NAME)
                     .map((k) => caches.delete(k))
             )
         ).then(() => sw.clients.claim())
@@ -49,6 +48,8 @@ sw.addEventListener('fetch', (event) => {
     if (request.method !== 'GET') return;
 
     const url = new URL(request.url);
+    // Never cache authenticated data or Firebase requests between accounts.
+    if (url.origin !== sw.location.origin || url.pathname.includes('/api/')) return;
 
     // App navigations: try the network first, fall back to the cached shell when offline.
     if (request.mode === 'navigate') {
@@ -56,30 +57,6 @@ sw.addEventListener('fetch', (event) => {
             fetch(request).catch(() =>
                 caches.match(request).then((cached) => cached ?? caches.match(OFFLINE_URL))
             )
-        );
-        return;
-    }
-
-    // API reads: network-first with a cache fallback so data stays viewable offline.
-    if (url.pathname.includes('/api/')) {
-        event.respondWith(
-            fetch(request)
-                .then((response) => {
-                    if (response && response.ok) {
-                        const clone = response.clone();
-                        caches.open(API_CACHE_NAME).then((cache) => cache.put(request, clone));
-                    }
-                    return response;
-                })
-                .catch(() =>
-                    caches.match(request).then((cached) => {
-                        if (cached) return cached;
-                        return new Response(
-                            JSON.stringify({ success: false, error: 'offline', offline: true }),
-                            { status: 503, headers: { 'Content-Type': 'application/json' } }
-                        );
-                    })
-                )
         );
         return;
     }
@@ -99,13 +76,13 @@ sw.addEventListener('push', (event) => {
     try {
         payload = event.data.json();
     } catch {
-        payload = { title: 'OpenFamily', body: event.data.text() };
+        payload = { title: 'chocomelerplan', body: event.data.text() };
     }
 
-    const title = payload.title ?? 'OpenFamily';
+    const title = payload.title ?? 'chocomelerplan';
     const options = {
         body: payload.body ?? '',
-        icon: '/icon-192.png',
+        icon: '/chocomelerplan-192.png',
         badge: '/icon-72.png',
         tag: payload.tag ?? 'openfamily',
         data: { url: payload.url ?? '/' },

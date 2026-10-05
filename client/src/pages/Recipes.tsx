@@ -2,12 +2,15 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useWebSocketUpdates } from '../hooks/useWebSocketUpdates';
 import { api } from '../lib/api';
+import { IS_FIREBASE } from '../lib/firebase/config';
+import { useAuth } from '../contexts/AuthContext';
 import { Plus, Search, Edit2, Trash2, Clock, Users, ChefHat, Eye, Link2, Sparkles, ShoppingCart, CheckSquare, Square, Filter, X, Carrot } from 'lucide-react';
 import { Card, CardContent, Button, Dialog, Input, Select, Textarea, Badge, useToast } from '../components/ui';
 import { useCategories } from '../hooks/useCategories';
 import { cn } from '../lib/utils';
 import { cleanIngredientForShopping } from '../lib/ingredientParser';
 import { foldText, matchesWords } from '../lib/textSearch';
+import { useSearchParams } from 'react-router-dom';
 
 /** Recipe returned by POST /api/ai/refine-recipe — a subset of ImportedRecipe:
  *  the model reorganises what it was given, it does not invent tags or an image. */
@@ -38,6 +41,10 @@ interface ImportedRecipe {
 }
 
 interface Recipe {
+    readOnly?: boolean;
+    archived?: boolean;
+    deleted_at?: string;
+    archived_at?: string;
     id: string;
     name: string;
     category: string;
@@ -124,6 +131,9 @@ const RecipeImage: React.FC<{ src?: string | null; alt: string }> = ({ src, alt 
 
 const Recipes: React.FC = () => {
     const { t } = useTranslation(['recipes', 'common']);
+    const { user } = useAuth();
+    const canManage = !IS_FIREBASE || Boolean(user && (user.is_owner || user.role !== 'enfant'));
+    const isArchived = (recipe: Recipe) => IS_FIREBASE && Boolean(recipe.readOnly || recipe.archived || recipe.deleted_at || recipe.archived_at);
     // Family-customizable list (Settings → Categories); defaults are translated,
     // custom names are shown as-is.
     const { categories: familyCategories } = useCategories();
@@ -147,6 +157,16 @@ const Recipes: React.FC = () => {
     const categoryLabel = (v: string) => t(`recipes:categories.${v}`, { defaultValue: v });
     const difficultyLabel = (v?: string) => (v ? t(`recipes:difficulties.${v}`, { defaultValue: v }) : '');
     const [recipes, setRecipes] = useState<Recipe[]>([]);
+    const [searchParams, setSearchParams] = useSearchParams();
+    const linkedRecipeId = searchParams.get('recipe');
+    useEffect(() => {
+        const recipe = recipes.find(r => r.id === linkedRecipeId);
+        if (recipe) {
+            setViewingRecipe(recipe);
+            setDetailDialogOpen(true);
+            setSearchParams({}, { replace: true });
+        }
+    }, [recipes, linkedRecipeId, setSearchParams]);
     const [loading, setLoading] = useState(true);
     const [dialogOpen, setDialogOpen] = useState(false);
     const [detailDialogOpen, setDetailDialogOpen] = useState(false);
@@ -171,6 +191,7 @@ const Recipes: React.FC = () => {
     const [sendingToShopping, setSendingToShopping] = useState(false);
 
     const openShoppingModal = (recipe: Recipe) => {
+        if (!canManage || isArchived(recipe)) return;
         setShoppingRecipeName(recipe.name);
         const list = recipe.ingredients.map((item) => {
             const cleaned = cleanIngredientForShopping(item);
@@ -312,6 +333,7 @@ const Recipes: React.FC = () => {
             const response = await api.get<{ success: boolean; data: Recipe[] }>('/api/recipes');
             if (response.success) {
                 setRecipes(response.data);
+                if (IS_FIREBASE) setViewingRecipe(current => current ? response.data.find(recipe => recipe.id === current.id) || current : null);
             }
         } catch (error) {
             console.error('Failed to load recipes:', error);
@@ -323,10 +345,12 @@ const Recipes: React.FC = () => {
 
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
+        if (!canManage || (editingRecipe && isArchived(editingRecipe))) return;
         setError('');
         try {
             const payload = {
                 ...formData,
+                image_url: IS_FIREBASE ? '' : formData.image_url,
                 ingredients: formData.ingredients.split('\n').filter((i) => i.trim()),
                 instructions: formData.instructions.split('\n').filter((i) => i.trim()),
                 prep_time: formData.prep_time ? parseInt(formData.prep_time) : undefined,
@@ -334,6 +358,16 @@ const Recipes: React.FC = () => {
                 servings: formData.servings ? parseInt(formData.servings) : undefined,
                 tags: formData.tags ? formData.tags.split(',').map((t) => t.trim()).filter((t) => t) : [],
             };
+
+            if (IS_FIREBASE && (payload.ingredients.length > 20 || payload.instructions.length > 20 || payload.tags.length > 20
+                || payload.ingredients.length + payload.instructions.length + payload.tags.length > 30)) {
+                setError('Spark admite hasta 20 ingredientes, 20 pasos y 20 etiquetas, con un máximo de 30 entre todos. Reduce las líneas o etiquetas antes de guardar.');
+                return;
+            }
+            if (IS_FIREBASE && (payload.ingredients.some(line => line.length > 1000) || payload.instructions.some(line => line.length > 3000) || payload.tags.some(tag => tag.length > 50))) {
+                setError('Cada ingrediente admite 1000 caracteres, cada paso 3000 y cada etiqueta 50. Acorta el texto antes de guardar.');
+                return;
+            }
 
             if (editingRecipe) {
                 await api.put(`/api/recipes/${editingRecipe.id}`, payload);
@@ -365,6 +399,7 @@ const Recipes: React.FC = () => {
     };
 
     const handleEdit = (recipe: Recipe) => {
+        if (!canManage || isArchived(recipe)) return;
         setError('');
         setEditingRecipe(recipe);
         setFormData({
@@ -557,16 +592,18 @@ const Recipes: React.FC = () => {
                     <p className="text-muted-foreground text-body">{t('recipes:subtitle')}</p>
                 </div>
                 <div className="flex flex-wrap gap-3">
-                    <Button variant="secondary" onClick={() => { setImportUrl(''); setImportDialogOpen(true); }}>
+                    {!IS_FIREBASE && <Button variant="secondary" onClick={() => { setImportUrl(''); setImportDialogOpen(true); }}>
                         <Link2 className="w-4 h-4 mr-2" />
                         {t('recipes:import.button')}
-                    </Button>
-                    <Button onClick={() => { resetForm(); setDialogOpen(true); }}>
+                    </Button>}
+                    {canManage && <Button onClick={() => { resetForm(); setDialogOpen(true); }}>
                         <Plus className="w-4 h-4 mr-2" />
                         {t('recipes:newRecipe')}
-                    </Button>
+                    </Button>}
                 </div>
             </div>
+
+            {IS_FIREBASE && <p className="text-caption text-muted-foreground">Spark no admite imágenes, subidas de archivos, importación por URL ni IA. Las recetas archivadas siguen disponibles solo para consulta.</p>}
 
             {/* Filters */}
             <Card className="overflow-hidden">
@@ -727,6 +764,7 @@ const Recipes: React.FC = () => {
                                     </p>
                                 )}
                                 <div className="flex flex-wrap gap-2 mb-3">
+                                    {isArchived(recipe) && <Badge variant="secondary">Archivada · Solo lectura</Badge>}
                                     <Badge variant={getCategoryColor(recipe.category)}>{categoryLabel(recipe.category)}</Badge>
                                     {recipe.difficulty && (
                                         <Badge variant={getDifficultyColor(recipe.difficulty)}>
@@ -758,12 +796,13 @@ const Recipes: React.FC = () => {
                                         <Eye className="h-4 w-4 mr-1" />
                                         {t('recipes:card.view')}
                                     </Button>
-                                    <Button variant="ghost" size="sm" onClick={() => handleEdit(recipe)}>
+                                    {canManage && !isArchived(recipe) && <><Button variant="ghost" size="sm" onClick={() => handleEdit(recipe)}>
                                         <Edit2 className="h-4 w-4" />
                                     </Button>
                                     <Button variant="ghost" size="sm" onClick={() => handleDelete(recipe.id)}>
                                         <Trash2 className="h-4 w-4 text-red-500" />
                                     </Button>
+                                    </>}
                                 </div>
                             </CardContent>
                         </Card>
@@ -779,6 +818,7 @@ const Recipes: React.FC = () => {
                 description={t('recipes:dialog.description')}
             >
                 <form onSubmit={handleSubmit} className="space-y-4">
+                    {IS_FIREBASE && <p className="text-caption text-muted-foreground">Máximo 20 ingredientes y 20 pasos, una línea por elemento. Ingredientes, pasos y etiquetas: 30 en total. Sin imágenes ni IA en Spark.</p>}
                     <Input
                         label={t('recipes:form.name')}
                         value={formData.name}
@@ -860,13 +900,13 @@ const Recipes: React.FC = () => {
                         onChange={(e) => setFormData({ ...formData, tags: e.target.value })}
                         placeholder={t('recipes:form.tagsPlaceholder')}
                     />
-                    <Input
+                    {!IS_FIREBASE && <Input
                         label={t('recipes:form.image')}
                         type="url"
                         value={formData.image_url}
                         onChange={(e) => setFormData({ ...formData, image_url: e.target.value })}
                         placeholder={t('recipes:form.imagePlaceholder')}
-                    />
+                    />}
                     {/* The page banner sits behind this dialog: repeat the save error here. */}
                     {error && (
                         <div role="alert" className="rounded-input border border-danger/30 bg-danger/10 px-3 py-2 text-caption text-danger">
@@ -874,7 +914,7 @@ const Recipes: React.FC = () => {
                         </div>
                     )}
                     <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-3 pt-4 border-t">
-                        <Button
+                        {!IS_FIREBASE && <Button
                             type="button"
                             variant="secondary"
                             disabled={refiningAi || (!formData.name && !formData.ingredients && !formData.instructions)}
@@ -884,7 +924,7 @@ const Recipes: React.FC = () => {
                         >
                             <Sparkles className="w-4 h-4 mr-2 text-amber-500 flex-shrink-0" />
                             {refiningAi ? t('recipes:refine.refining') : t('recipes:refine.button')}
-                        </Button>
+                        </Button>}
                         <div className="flex gap-2 w-full sm:w-auto">
                             <Button type="button" variant="secondary" onClick={() => setDialogOpen(false)} className="flex-1 sm:flex-none whitespace-nowrap">
                                 {t('common:actions.cancel')}
@@ -942,6 +982,7 @@ const Recipes: React.FC = () => {
                 >
                     <div className="space-y-6">
                         <div className="flex flex-wrap gap-2">
+                            {isArchived(viewingRecipe) && <Badge variant="secondary">Archivada · Solo lectura</Badge>}
                             <Badge variant={getCategoryColor(viewingRecipe.category)}>
                                 {categoryLabel(viewingRecipe.category)}
                             </Badge>
@@ -1025,7 +1066,7 @@ const Recipes: React.FC = () => {
                         </div>
 
                         <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-3 pt-4 border-t">
-                            <Button
+                            {canManage && !isArchived(viewingRecipe) && <Button
                                 variant="secondary"
                                 onClick={() => openShoppingModal(viewingRecipe)}
                                 title={t('recipes:shopping.button')}
@@ -1033,7 +1074,7 @@ const Recipes: React.FC = () => {
                             >
                                 <ShoppingCart className="h-4 w-4 mr-2 text-emerald-600 flex-shrink-0" />
                                 {t('recipes:shopping.button')}
-                            </Button>
+                            </Button>}
                             <div className="flex gap-2 w-full sm:w-auto">
                                 <Button
                                     variant="secondary"
@@ -1042,7 +1083,7 @@ const Recipes: React.FC = () => {
                                 >
                                     {t('common:actions.close')}
                                 </Button>
-                                <Button
+                                {canManage && !isArchived(viewingRecipe) && <Button
                                     onClick={() => {
                                         setDetailDialogOpen(false);
                                         handleEdit(viewingRecipe);
@@ -1051,7 +1092,7 @@ const Recipes: React.FC = () => {
                                 >
                                     <Edit2 className="h-4 w-4 mr-2 flex-shrink-0" />
                                     {t('common:actions.edit')}
-                                </Button>
+                                </Button>}
                             </div>
                         </div>
                     </div>

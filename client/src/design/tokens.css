@@ -2,18 +2,18 @@
   color-scheme: light;
 
   /* Base tokens (hex) - palette dérivée du logo OpenFamily */
-  --bg: #f7f2e9;
-  --surface: #fcfaf5;
-  --surface-2: #f1e9db;
-  --border-base: #e7dccc;
-  --border-strong-base: #d4c6b2;
-  --text-base: #2a2028;
-  --text-muted-base: #6e5f66;
+  --bg: #fbf8f5;
+  --surface: #ffffff;
+  --surface-2: #f5efe8;
+  --border-base: #ede4da;
+  --border-strong-base: #d8c9b9;
+  --text-base: #181615;
+  --text-muted-base: #79716b;
 
-  --primary-base: #dc4a60;
-  --primary-hover-base: #c53e53;
-  --primary-pressed-base: #b0364a;
-  --primary-soft-base: #f7e3de;
+  --primary-base: #ff4d36;
+  --primary-hover-base: #e83e28;
+  --primary-pressed-base: #d53520;
+  --primary-soft-base: #fff1ee;
 
   --success-base: #4e8a5a;
   --warning-base: #c49a45;
@@ -21,33 +21,33 @@
   --info-base: #7a5270;
 
   /* RGB tokens for Tailwind rgb(var(--token) / alpha) */
-  --background: 247 242 233;
-  --foreground: 42 32 40;
-  --card: 252 250 245;
-  --card-foreground: 42 32 40;
-  --popover: 252 250 245;
-  --popover-foreground: 42 32 40;
+  --background: 251 248 245;
+  --foreground: 24 22 21;
+  --card: 255 255 255;
+  --card-foreground: 24 22 21;
+  --popover: 255 255 255;
+  --popover-foreground: 24 22 21;
 
-  --surface-rgb: 252 250 245;
-  --surface-2-rgb: 241 233 219;
+  --surface-rgb: 255 255 255;
+  --surface-2-rgb: 245 239 232;
 
-  --primary: 220 74 96;
+  --primary: 255 77 54;
   --primary-foreground: 255 255 255;
-  --primary-hover: 197 62 83;
-  --primary-pressed: 176 54 74;
-  --primary-soft: 247 227 222;
+  --primary-hover: 232 62 40;
+  --primary-pressed: 213 53 32;
+  --primary-soft: 255 241 238;
 
   /* Pêche/abricot - secondaire chaud repris du dégradé "Family" */
   --peach: 219 138 78;
   /* Prune - repris du fond du logo, 3e teinte data-viz */
   --plum: 122 82 112;
 
-  --secondary: 241 233 219;
-  --secondary-foreground: 42 32 40;
-  --muted: 241 233 219;
-  --muted-foreground: 110 95 102;
-  --accent: 247 227 222;
-  --accent-foreground: 220 74 96;
+  --secondary: 245 239 232;
+  --secondary-foreground: 24 22 21;
+  --muted: 245 239 232;
+  --muted-foreground: 121 113 107;
+  --accent: 255 241 238;
+  --accent-foreground: 255 77 54;
 
   --destructive: 200 67 78;
   --destructive-foreground: 255 255 255;
@@ -57,14 +57,14 @@
   --danger: 200 67 78;
   --info: 122 82 112;
 
-  --border: 231 220 204;
-  --border-strong: 212 198 178;
-  --input: 231 220 204;
-  --ring: 220 74 96;
+  --border: 237 228 218;
+  --border-strong: 216 201 185;
+  --input: 237 228 218;
+  --ring: 255 77 54;
 
-  --radius: 8px;
-  --radius-card: 8px;
-  --radius-input: 6px;
+  --radius: 16px;
+  --radius-card: 20px;
+  --radius-input: 12px;
   --radius-pill: 999px;
 
   /* Éditorial : on s'appuie sur les filets, pas sur les ombres */
@@ -80,9 +80,9 @@
   color-scheme: dark;
 
   /* Mode sombre : ambiance prune-noir du fond du logo */
-  --bg: #110a18;
-  --surface: #1b1126;
-  --surface-2: #180f22;
+  --bg: #181615;
+  --surface: #24201d;
+  --surface-2: #302923;
   --border-base: #2c1e38;
   --border-strong-base: #3e2b4d;
   --text-base: #f2eaee;
@@ -93,31 +93,31 @@
   --primary-pressed-base: #f04764;
   --primary-soft-base: #2a1525;
 
-  --background: 17 10 24;
+  --background: 24 22 21;
   --foreground: 242 234 238;
-  --card: 27 17 38;
+  --card: 36 32 29;
   --card-foreground: 242 234 238;
-  --popover: 27 17 38;
+  --popover: 36 32 29;
   --popover-foreground: 242 234 238;
 
-  --surface-rgb: 27 17 38;
-  --surface-2-rgb: 24 15 34;
+  --surface-rgb: 36 32 29;
+  --surface-2-rgb: 48 41 35;
 
-  --primary: 255 107 126;
+  --primary: 255 132 110;
   --primary-foreground: 36 14 22;
-  --primary-hover: 255 86 109;
-  --primary-pressed: 240 71 100;
-  --primary-soft: 42 21 37;
+  --primary-hover: 255 112 85;
+  --primary-pressed: 242 91 64;
+  --primary-soft: 65 35 29;
 
   --peach: 240 168 120;
   --plum: 181 131 168;
 
-  --secondary: 24 15 34;
+  --secondary: 48 41 35;
   --secondary-foreground: 242 234 238;
-  --muted: 24 15 34;
+  --muted: 48 41 35;
   --muted-foreground: 183 168 177;
-  --accent: 42 21 37;
-  --accent-foreground: 255 107 126;
+  --accent: 65 35 29;
+  --accent-foreground: 255 132 110;
 
   --destructive: 240 113 123;
   --destructive-foreground: 36 14 22;
@@ -127,10 +127,10 @@
   --danger: 240 113 123;
   --info: 181 131 168;
 
-  --border: 44 30 56;
-  --border-strong: 62 43 77;
-  --input: 44 30 56;
-  --ring: 255 107 126;
+  --border: 65 54 46;
+  --border-strong: 86 70 58;
+  --input: 65 54 46;
+  --ring: 255 132 110;
 
   --shadow-surface: 0 1px 2px rgba(0, 0, 0, 0.3);
   --shadow-surface-hover: 0 4px 16px rgba(0, 0, 0, 0.4);

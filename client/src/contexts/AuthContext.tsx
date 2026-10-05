@@ -1,12 +1,19 @@
-import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
+import React, { createContext, useContext, useState, useEffect, useRef, ReactNode } from 'react';
+import { onAuthStateChanged } from 'firebase/auth';
+import { doc, onSnapshot } from 'firebase/firestore';
 import { api } from '../lib/api';
 import { applyServerLanguage } from '../lib/language';
 import { applyRegionalPreferences } from '../i18n/format';
+import { getFirebase, getFirebaseConfigError, IS_DEMO, IS_FIREBASE } from '../lib/firebase/config';
+import { FIREBASE_AUTH_REFRESH_EVENT, FIREBASE_REALTIME_EVENT, detectFirebaseOverdueTasks, firebaseError, firebaseRestoreUser, invalidateFirebaseCache, requestFirebaseAuthRefresh, setFirebaseSession, waitForFirebaseAuthOperation } from '../lib/firebase/transport';
 
 interface User {
     id: string;
     email: string;
     name: string;
+    family_id?: string | null;
+    member_id?: string | null;
+    dashboard_prefs?: DashboardPrefs;
     is_owner?: boolean;
     role?: string;
     currency?: string;
@@ -37,12 +44,15 @@ export const DEFAULT_DASHBOARD_PREFS: DashboardPrefs = {
 interface AuthContextType {
     user: User | null;
     loading: boolean;
+    configError: string | null;
+    restoreError: string | null;
+    retryRestore: () => Promise<void>;
     login: (email: string, password: string) => Promise<void>;
     register: (email: string, password: string, name: string, inviteToken?: string, role?: string) => Promise<void>;
     joinFamily: (inviteToken: string) => Promise<void>;
     leaveFamily: () => Promise<void>;
     refreshToken: () => Promise<void>;
-    logout: () => void;
+    logout: () => Promise<void>;
     isAuthenticated: boolean;
     updateCurrency: (currency: string) => Promise<void>;
     updateRegionalPreferences: (prefs: { week_start_day: number | null }) => Promise<void>;
@@ -61,14 +71,140 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 const AUTH_EXPIRED_EVENT = 'openfamily:auth-expired';
-const IS_DEMO = Boolean(import.meta.env.VITE_DEMO);
 
 export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
     const [user, setUser] = useState<User | null>(null);
     const [loading, setLoading] = useState(true);
     const [dashboardPrefs, setDashboardPrefs] = useState<DashboardPrefs | null>(null);
+    const [restoreError, setRestoreError] = useState<string | null>(null);
+    const [firebaseUid, setFirebaseUid] = useState<string | null>(null);
+    const [retryCount, setRetryCount] = useState(0);
+    const configError = getFirebaseConfigError();
+    const restore = useRef<(blocking?: boolean) => Promise<void>>(async () => undefined);
+    const scannedSession = useRef('');
+    const acceptedUser = useRef<User | null>(null);
+
+    const acceptUser = (next: User) => {
+        if (IS_FIREBASE) {
+            if (getFirebase().auth.currentUser?.uid !== next.id) return;
+            setFirebaseSession(next.id, next.family_id ?? null, `${next.role || ''}:${Boolean(next.is_owner)}:${next.member_id || ''}`);
+            setDashboardPrefs(next.dashboard_prefs ?? DEFAULT_DASHBOARD_PREFS);
+            const key = `${next.id}:${next.family_id || ''}`;
+            if (next.family_id && next.role !== 'enfant' && scannedSession.current !== key) {
+                scannedSession.current = key;
+                void detectFirebaseOverdueTasks(next.family_id).catch(error => {
+                    window.dispatchEvent(new CustomEvent(FIREBASE_REALTIME_EVENT, { detail: { status: 'error', message: firebaseError(error).message } }));
+                });
+            }
+        } else {
+            localStorage.setItem('user', JSON.stringify(next));
+        }
+        setUser(next);
+        acceptedUser.current = next;
+        applyServerLanguage(next.language);
+        applyRegionalPreferences(next.week_start_day);
+    };
+
+    const retryRestore = async () => {
+        setRetryCount(count => count + 1);
+        await restore.current();
+    };
 
     useEffect(() => {
+        if (!IS_FIREBASE) return;
+        if (configError) { setLoading(false); return; }
+        let active = true;
+        let sequence = 0;
+        let unsubscribe = () => {};
+        const refresh = async (blocking = true) => {
+            const ticket = ++sequence;
+            if (active) {
+                if (blocking) { setLoading(true); setUser(null); setDashboardPrefs(null); }
+                setRestoreError(null);
+            }
+            try {
+                const { auth, ready } = getFirebase();
+                await ready;
+                await auth.authStateReady();
+                const uid = auth.currentUser?.uid;
+                await waitForFirebaseAuthOperation();
+                if (!active || ticket !== sequence || auth.currentUser?.uid !== uid) return;
+                if (!uid) return;
+                const response = await firebaseRestoreUser();
+                if (active && ticket === sequence && auth.currentUser?.uid === uid) acceptUser(response.data.user);
+            } catch (error) {
+                if (active && ticket === sequence) {
+                    invalidateFirebaseCache();
+                    setUser(null);
+                    setRestoreError(firebaseError(error).message);
+                }
+            } finally {
+                if (active && ticket === sequence) setLoading(false);
+            }
+        };
+        restore.current = refresh;
+        const onRefresh = (event: Event) => { void refresh((event as CustomEvent).detail?.blocking !== false); };
+        window.addEventListener(FIREBASE_AUTH_REFRESH_EVENT, onRefresh);
+        void (async () => {
+            try {
+                const { auth, ready } = getFirebase();
+                await ready;
+                await auth.authStateReady();
+                if (!active) return;
+                unsubscribe = onAuthStateChanged(auth, account => {
+                    acceptedUser.current = null;
+                    scannedSession.current = '';
+                    setFirebaseSession(account?.uid ?? null, null);
+                    setFirebaseUid(account?.uid ?? null);
+                    void refresh();
+                }, error => {
+                    if (active) { setRestoreError(firebaseError(error).message); setLoading(false); }
+                });
+            } catch (error) {
+                if (active) { setRestoreError(firebaseError(error).message); setLoading(false); }
+            }
+        })();
+        return () => {
+            active = false;
+            sequence++;
+            unsubscribe();
+            window.removeEventListener(FIREBASE_AUTH_REFRESH_EVENT, onRefresh);
+        };
+    }, [configError]);
+
+    useEffect(() => {
+        if (!IS_FIREBASE || !firebaseUid || configError) return;
+        let initial = true;
+        let previous = '';
+        let previousFamily: unknown;
+        let active = true;
+        const unsubscribe = onSnapshot(doc(getFirebase().db, 'users', firebaseUid), { includeMetadataChanges: true }, snapshot => {
+            if (!active || getFirebase().auth.currentUser?.uid !== firebaseUid) return;
+            if (snapshot.metadata.fromCache || snapshot.metadata.hasPendingWrites) return;
+            const next = JSON.stringify(snapshot.data());
+            const family = snapshot.data()?.active_family_id;
+            if (initial && snapshot.exists()) {
+                if (acceptedUser.current?.id === firebaseUid && (acceptedUser.current.family_id ?? null) !== (family ?? null)) requestFirebaseAuthRefresh();
+                else void restore.current(false);
+            } else if (!initial && next !== previous) {
+                if (family !== previousFamily) requestFirebaseAuthRefresh();
+                else { invalidateFirebaseCache('auth'); void restore.current(false); }
+            }
+            initial = false;
+            previous = next;
+            previousFamily = family;
+        }, error => {
+            if (!active || getFirebase().auth.currentUser?.uid !== firebaseUid) return;
+            invalidateFirebaseCache();
+            setUser(null);
+            setRestoreError(firebaseError(error).message);
+            setLoading(false);
+        });
+        return () => { active = false; unsubscribe(); };
+    }, [firebaseUid, retryCount, configError]);
+
+    useEffect(() => {
+        if (IS_FIREBASE) return;
         let mounted = true;
 
         const clearSession = () => {
@@ -130,6 +266,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
     const login = async (email: string, password: string) => {
         const response = await api.login(email, password);
+        if (IS_FIREBASE) { await restore.current(); return; }
         if (response.success && response.user) {
             setUser(response.user);
             // Also store in localStorage for persistence
@@ -142,6 +279,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
     const register = async (email: string, password: string, name: string, inviteToken?: string, role?: string) => {
         const response = await api.register(email, password, name, inviteToken, role);
+        if (IS_FIREBASE) { await restore.current(); return; }
         if (response.success && response.user) {
             setUser(response.user);
             localStorage.setItem('user', JSON.stringify(response.user));
@@ -152,21 +290,22 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
     const joinFamily = async (inviteToken: string) => {
         const response = await api.joinFamily(inviteToken);
+        if (IS_FIREBASE) { await restore.current(); return; }
         if (response.success && response.user) {
-            setUser(response.user);
-            localStorage.setItem('user', JSON.stringify(response.user));
+            acceptUser(response.user);
         }
     };
 
     const leaveFamily = async () => {
         const response = await api.leaveFamily();
+        if (IS_FIREBASE) { await restore.current(); return; }
         if (response.success && response.user) {
-            setUser(response.user);
-            localStorage.setItem('user', JSON.stringify(response.user));
+            acceptUser(response.user);
         }
     };
 
     const refreshToken = async () => {
+        if (IS_FIREBASE) { await restore.current(); return; }
         const response = await api.refreshToken();
         if (response.success && response.user) {
             setUser(response.user);
@@ -174,9 +313,16 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         }
     };
 
-    const logout = () => {
-        api.logout();
+    const logout = async () => {
+        try {
+            await api.logout();
+        } catch (error) {
+            if (IS_FIREBASE) { setUser(null); setRestoreError(firebaseError(error).message); }
+            throw error;
+        }
         setUser(null);
+        setRestoreError(null);
+        setDashboardPrefs(null);
         applyRegionalPreferences(null);
         localStorage.removeItem('user');
     };
@@ -184,8 +330,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     const updateCurrency = async (currency: string) => {
         const response = await api.put<{ success: boolean; data: { user: User } }>('/api/auth/currency', { currency });
         if (response.success && response.data?.user) {
-            setUser(response.data.user);
-            localStorage.setItem('user', JSON.stringify(response.data.user));
+            acceptUser(response.data.user);
         }
     };
 
@@ -195,18 +340,14 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
             prefs
         );
         if (response.success && response.data?.user) {
-            const next = { ...user, ...response.data.user } as User;
-            setUser(next);
-            applyRegionalPreferences(next.week_start_day);
-            localStorage.setItem('user', JSON.stringify(next));
+            acceptUser(response.data.user);
         }
     };
 
     const updateProfile = async (data: { name?: string; avatar_url?: string | null }) => {
         const response = await api.put<{ success: boolean; data: { user: User } }>('/api/auth/profile', data);
         if (response.success && response.data?.user) {
-            setUser(response.data.user);
-            localStorage.setItem('user', JSON.stringify(response.data.user));
+            acceptUser(response.data.user);
         }
     };
 
@@ -214,6 +355,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     // session changes. Failure is non-blocking: the dashboard falls back to the
     // default arrangement.
     useEffect(() => {
+        if (IS_FIREBASE) return;
         if (!user) {
             setDashboardPrefs(null);
             return;
@@ -252,6 +394,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
             '/api/auth/modules',
             { disabled_modules: modules }
         );
+        if (IS_FIREBASE) { await restore.current(); return; }
         if (response.success && response.data) {
             setUser((prev) => {
                 if (!prev) return prev;
@@ -267,13 +410,16 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
             value={{
                 user,
                 loading,
+                configError,
+                restoreError,
+                retryRestore,
                 login,
                 register,
                 joinFamily,
                 leaveFamily,
                 refreshToken,
                 logout,
-                isAuthenticated: !!user,
+                isAuthenticated: IS_FIREBASE ? !!firebaseUid : !!user,
                 updateCurrency,
                 updateRegionalPreferences,
                 updateProfile,

@@ -14,6 +14,7 @@ import { Button } from '../components/ui/Button';
 import { Dialog } from '../components/ui';
 import { useNavigate } from 'react-router-dom';
 import FamilyNotes, { type FamilyNote } from '../components/app/FamilyNotes';
+import CookingTasks from '../components/app/CookingTasks';
 
 interface DashboardStats {
     upcomingAppointments: number;
@@ -44,22 +45,6 @@ interface PlanningEntry {
     location?: string;
 }
 
-interface LatestFamilyPost {
-    id: string;
-    author_name: string;
-    author_avatar?: string | null;
-    content?: string | null;
-    image_url?: string | null;
-    link_url?: string | null;
-    created_at: string;
-    seen_by: Array<{
-        id: string;
-        name: string;
-        seen_at: string;
-    }>;
-    is_seen: boolean;
-}
-
 const Dashboard: React.FC = () => {
     const { t } = useTranslation(['dashboard', 'common', 'notes']);
     const { user, isModuleEnabled, dashboardPrefs, updateDashboardPrefs } = useAuth();
@@ -68,7 +53,6 @@ const Dashboard: React.FC = () => {
     const [appointments, setAppointments] = useState<Appointment[]>([]);
     const [planning, setPlanning] = useState<PlanningEntry[]>([]);
     const [notes, setNotes] = useState<FamilyNote[]>([]);
-    const [latestPost, setLatestPost] = useState<LatestFamilyPost | null>(null);
     const [loading, setLoading] = useState(true);
     const [customizing, setCustomizing] = useState(false);
     const navigate = useNavigate();
@@ -91,22 +75,6 @@ const Dashboard: React.FC = () => {
     useWebSocketUpdates('budget', () => { void loadAll(); });
     useWebSocketUpdates('planning', () => { void loadPlanning(); });
     useWebSocketUpdates('notes', () => { void loadNotes(); });
-    useWebSocketUpdates('posts', () => { void loadLatestPost(); });
-
-    const loadLatestPost = async () => {
-        try {
-            const res = await api.get<{
-                success: boolean;
-                data: LatestFamilyPost | null;
-            }>('/api/posts/latest');
-
-            if (res.success) {
-                setLatestPost(res.data);
-            }
-        } catch (e) {
-            console.error('Latest post load error:', e);
-        }
-    };
 
     const loadNotes = async () => {
         try {
@@ -132,7 +100,6 @@ const Dashboard: React.FC = () => {
     const loadAll = async () => {
         try {
             void loadNotes();
-            void loadLatestPost();
             void loadPlanning();
             const [statsRes, apptRes] = await Promise.all([
                 api.get<{ success: boolean; data: DashboardStats }>('/api/dashboard'),
@@ -449,153 +416,8 @@ const Dashboard: React.FC = () => {
         );
     };
 
-    const markLatestPostSeen = async () => {
-        if (!latestPost || latestPost.is_seen) return;
-
-        try {
-            await api.post(
-                `/api/posts/${latestPost.id}/seen`,
-                {}
-            );
-            void loadLatestPost();
-        } catch (e) {
-            console.error(
-                'Mark latest post seen error:',
-                e
-            );
-        }
-    };
-
     const renderNotes = () => (
         <section key="notes" className="space-y-6">
-            {latestPost && (
-                <div
-                    className={`rounded-card border p-5 ${
-                        latestPost.is_seen
-                            ? 'border-border bg-card'
-                            : 'border-primary/30 bg-primary-soft/10'
-                    }`}
-                >
-                    <div className="mb-3 flex items-center justify-between gap-3">
-                        <h2 className="font-serif text-h2">
-                            {t('dashboard:latestPost.title')}
-                        </h2>
-
-                        <button
-                            type="button"
-                            onClick={() => navigate('/posts')}
-                            className="text-caption font-medium text-primary hover:underline"
-                        >
-                            {t('dashboard:latestPost.viewAll')}
-                        </button>
-                    </div>
-
-                    <div className="flex items-start gap-3">
-                        {latestPost.author_avatar ? (
-                            <img
-                                src={latestPost.author_avatar}
-                                alt={latestPost.author_name}
-                                className="h-9 w-9 shrink-0 rounded-full object-cover"
-                            />
-                        ) : (
-                            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-primary-soft text-caption font-semibold text-primary">
-                                {latestPost.author_name.charAt(0) || '?'}
-                            </div>
-                        )}
-
-                        <div className="min-w-0 flex-1">
-                            <p className="text-caption font-semibold text-foreground">
-                                {latestPost.author_name}
-                            </p>
-
-                            <p className="text-micro text-muted-foreground">
-                                {new Intl.DateTimeFormat(
-                                    undefined,
-                                    {
-                                        dateStyle: 'medium',
-                                        timeStyle: 'short',
-                                    }
-                                ).format(
-                                    new Date(
-                                        latestPost.created_at
-                                    )
-                                )}
-                            </p>
-
-                            {latestPost.content && (
-                                <p className="mt-3 whitespace-pre-wrap break-words text-body">
-                                    {latestPost.content}
-                                </p>
-                            )}
-
-                            {latestPost.image_url && (
-                                <img
-                                    src={latestPost.image_url}
-                                    alt=""
-                                    className="mt-3 max-h-64 w-full rounded-card border border-border bg-surface-2 object-contain"
-                                />
-                            )}
-
-                            {latestPost.link_url && (
-                                <a
-                                    href={latestPost.link_url}
-                                    target="_blank"
-                                    rel="noreferrer"
-                                    className="mt-3 block truncate text-caption text-primary hover:underline"
-                                >
-                                    {latestPost.link_url}
-                                </a>
-                            )}
-
-                            <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
-                                <p className="text-micro text-muted-foreground">
-                                    {latestPost.seen_by.length
-                                        ? t(
-                                              'dashboard:latestPost.seenBy',
-                                              {
-                                                  names: latestPost.seen_by
-                                                      .map(
-                                                          (
-                                                              person
-                                                          ) =>
-                                                              person.name
-                                                      )
-                                                      .join(', '),
-                                              }
-                                          )
-                                        : t(
-                                              'dashboard:latestPost.notSeen'
-                                          )}
-                                </p>
-
-                                <button
-                                    type="button"
-                                    disabled={
-                                        latestPost.is_seen
-                                    }
-                                    onClick={() =>
-                                        void markLatestPostSeen()
-                                    }
-                                    className={`rounded-input px-3 py-1.5 text-caption font-medium ${
-                                        latestPost.is_seen
-                                            ? 'text-success'
-                                            : 'bg-primary-soft text-primary'
-                                    }`}
-                                >
-                                    {latestPost.is_seen
-                                        ? t(
-                                              'dashboard:latestPost.seen'
-                                          )
-                                        : t(
-                                              'dashboard:latestPost.markSeen'
-                                          )}
-                                </button>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            )}
-
             <div>
                 <h2 className="font-serif text-h2 mb-4">
                     {t('notes:title')}
@@ -657,6 +479,7 @@ const Dashboard: React.FC = () => {
 
     return (
         <div className="space-y-8">
+            <CookingTasks />
             {/* En-tête éditorial */}
             <div className="flex items-start justify-between gap-4">
                 <div>

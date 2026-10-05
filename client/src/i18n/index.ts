@@ -39,8 +39,8 @@ void i18n
     .init({
         resources,
         supportedLngs: SUPPORTED_LANGUAGES.length ? SUPPORTED_LANGUAGES : ['en'],
-        // English is the default for any browser that is not French.
-        fallbackLng: 'en',
+        lng: 'es',
+        fallbackLng: 'es',
         load: 'languageOnly',
         nonExplicitSupportedLngs: true,
         ns: namespaces.length ? namespaces : ['common'],

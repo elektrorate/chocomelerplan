@@ -12,8 +12,9 @@
 // user action.
 import i18n from '../i18n';
 import { api } from './api';
+import { getFirebase, getFirebaseConfigError, IS_FIREBASE } from './firebase/config';
 
-const IS_DEMO = Boolean(import.meta.env.VITE_DEMO);
+const IS_DEMO = import.meta.env.VITE_DEMO === 'true';
 const EXPLICIT_LANGUAGE_KEY = 'i18nextLngExplicit';
 
 const getExplicitChoice = (): string | null => {
@@ -24,7 +25,9 @@ const getExplicitChoice = (): string | null => {
     }
 };
 
-const isAuthenticated = () => IS_DEMO || api.getToken() !== null;
+const isAuthenticated = () => IS_DEMO || (IS_FIREBASE
+    ? !getFirebaseConfigError() && getFirebase().auth.currentUser !== null
+    : api.getToken() !== null);
 
 /**
  * Persist the language on the server. Silently skipped when unauthenticated

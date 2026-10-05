@@ -72,6 +72,7 @@
 
   body {
     @apply bg-background text-foreground font-sans antialiased;
+    font-family: 'Plus Jakarta Sans', 'Instrument Sans', system-ui, sans-serif;
     font-feature-settings: 'rlig' 1, 'calt' 1;
     /* Prevent long unbreakable strings (emails, URLs, long words) from overflowing their card */
     overflow-wrap: break-word;
@@ -101,6 +102,19 @@
 }
 
 @layer components {
+  .cooking-card {
+    transition: transform 240ms var(--ease-soft), box-shadow 240ms var(--ease-soft);
+  }
+
+  .cooking-card:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 10px 25px -4px rgba(24, 22, 21, 0.06);
+  }
+
+  ::selection {
+    background: rgb(var(--primary));
+    color: rgb(var(--primary-foreground));
+  }
   .card-nexus {
     @apply rounded-card border border-border bg-card shadow-surface;
     @apply transition-[box-shadow,border-color,transform] duration-base ease-soft;
@@ -118,12 +132,12 @@
   }
 
   .btn-primary {
-    @apply rounded-input bg-primary text-primary-foreground shadow-surface;
+    @apply rounded-pill bg-primary text-primary-foreground shadow-surface;
     @apply hover:bg-primary-hover active:scale-[0.98] active:bg-primary-pressed;
   }
 
   .btn-secondary {
-    @apply rounded-input border border-border bg-secondary text-secondary-foreground;
+    @apply rounded-pill border border-border bg-secondary text-secondary-foreground;
     @apply hover:border-border-strong hover:bg-surface-2;
     @apply active:scale-[0.98];
   }
@@ -135,7 +149,7 @@
   }
 
   .btn-destructive {
-    @apply rounded-input bg-destructive text-destructive-foreground shadow-surface;
+    @apply rounded-pill bg-destructive text-destructive-foreground shadow-surface;
     @apply hover:bg-destructive/90 active:scale-[0.98];
   }
 
@@ -168,6 +182,13 @@
 }
 
 @layer utilities {
+  .font-sans {
+    font-family: 'Plus Jakarta Sans', 'Instrument Sans', system-ui, sans-serif;
+  }
+
+  .font-serif {
+    font-family: 'Playfair Display', 'Fraunces', Georgia, serif;
+  }
   .scrollbar-hide {
     -ms-overflow-style: none;
     scrollbar-width: none;

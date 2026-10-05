@@ -10,7 +10,6 @@ import ResetPassword from './pages/ResetPassword';
 import Kiosk from './pages/Kiosk';
 import ServerSetup from './pages/ServerSetup';
 import Dashboard from './pages/Dashboard';
-import Posts from './pages/Posts';
 import ShoppingList from './pages/ShoppingList';
 import Tasks from './pages/Tasks';
 import Rewards from './pages/Rewards';
@@ -22,10 +21,12 @@ import Budget from './pages/Budget';
 import Family from './pages/Family';
 import Settings from './pages/Settings';
 import Join from './pages/Join';
-import Integrations from './pages/Integrations';
+import FamilySetup from './pages/FamilySetup';
+import { IS_DEMO, IS_FIREBASE } from './lib/firebase/config';
+import { Button } from './components/ui/Button';
 
 function App() {
-    const { isAuthenticated, loading, isModuleEnabled } = useAuth();
+    const { user, isAuthenticated, loading, isModuleEnabled, configError, restoreError, retryRestore, logout } = useAuth();
     const { t } = useTranslation('common');
     const location = useLocation();
     const navigate = useNavigate();
@@ -36,10 +37,30 @@ function App() {
         isModuleEnabled(key) ? element : <Navigate to="/" replace />;
 
     const [serverReady, setServerReady] = useState(isServerConfigured());
+    const [sessionActionError, setSessionActionError] = useState('');
+
+    if (configError) {
+        return (
+            <main className="flex min-h-screen items-center justify-center bg-background p-6">
+                <section className="w-full max-w-lg space-y-4 rounded-card border border-border bg-card p-6">
+                    <h1 className="font-serif text-heading">Firebase no esta configurado</h1>
+                    <p role="alert" className="break-words text-body-sm text-destructive">{configError}</p>
+                    <p className="text-body-sm text-muted-foreground">Configura las variables publicas del proyecto y reinicia el frontend. No incluyas claves administrativas en VITE_*.</p>
+                    <p className="text-body-sm text-muted-foreground">Usa un proyecto Spark sin facturacion, con correo/contrasena y Firestore habilitados.</p>
+                    <Button onClick={() => window.location.reload()}>Reintentar</Button>
+                </section>
+            </main>
+        );
+    }
 
     // Native app, first launch: ask which self-hosted server to connect to.
-    if (isNative() && !serverReady) {
+    if (!IS_FIREBASE && !IS_DEMO && isNative() && !serverReady) {
         return <ServerSetup onConfigured={() => setServerReady(true)} />;
+    }
+
+    // Email action links must also work while an existing profile is restoring.
+    if (location.pathname === '/reset-password') {
+        return <ResetPassword onDone={() => navigate('/', { replace: true })} />;
     }
 
     if (loading) {
@@ -53,14 +74,27 @@ function App() {
         );
     }
 
-    // Password reset arrives by email link, so it must work while logged out.
-    if (location.pathname === '/reset-password') {
-        return <ResetPassword onDone={() => navigate('/', { replace: true })} />;
+    if (restoreError) {
+        return (
+            <main className="flex min-h-screen items-center justify-center bg-background p-6">
+                <section className="w-full max-w-lg space-y-4 rounded-card border border-border bg-card p-6">
+                    <h1 className="font-serif text-heading">No se pudo restaurar tu perfil</h1>
+                    <p role="alert" className="text-body-sm text-destructive">{sessionActionError || restoreError}</p>
+                    <p className="text-body-sm text-muted-foreground">Tu cuenta no se ha cerrado. Comprueba la conexion y reintenta antes de acceder a los datos familiares.</p>
+                    <div className="flex flex-wrap gap-3">
+                        <Button onClick={() => { setSessionActionError(''); void retryRestore(); }}>Reintentar</Button>
+                        <Button variant="secondary" onClick={() => void logout().catch(error => setSessionActionError(error.message))}>Cerrar sesion</Button>
+                    </div>
+                </section>
+            </main>
+        );
     }
 
     if (!isAuthenticated) {
         return <Login />;
     }
+
+    if (IS_FIREBASE && user && !user.family_id) return <FamilySetup />;
 
     // Kiosk is a full-screen, chrome-less display — render it outside the Layout.
     if (location.pathname === '/kiosk') {
@@ -70,10 +104,10 @@ function App() {
     return (
         <Layout>
             <Routes>
-                <Route path="/" element={<Dashboard />} />
+                <Route path="/" element={<Navigate to={isModuleEnabled('planning') ? '/planning' : '/dashboard'} replace />} />
+                <Route path="/dashboard" element={<Dashboard />} />
                 <Route path="/shopping" element={<ShoppingList />} />
                 <Route path="/tasks" element={<Tasks />} />
-                <Route path="/posts" element={<Posts />} />
                 <Route path="/rewards" element={moduleRoute('rewards', <Rewards />)} />
                 <Route path="/calendar" element={<Calendar />} />
                 <Route path="/planning" element={moduleRoute('planning', <Planning />)} />
@@ -82,7 +116,6 @@ function App() {
                 <Route path="/budget" element={moduleRoute('budget', <Budget />)} />
                 <Route path="/family" element={<Family />} />
                 <Route path="/settings" element={<Settings />} />
-                <Route path="/integrations" element={moduleRoute('integrations', <Integrations />)} />
                 <Route path="/join" element={<Join />} />
                 <Route path="*" element={<Navigate to="/" replace />} />
             </Routes>

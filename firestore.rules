@@ -1,0 +1,517 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() { return request.auth != null; }
+    function uid() { return request.auth.uid; }
+    function bounded() { return request.query.limit != null && request.query.limit <= 200; }
+    function id(v) { return v is string && v.matches('^[A-Za-z0-9-]{1,128}$'); }
+    function profileId(v) { return v is string && (v.matches('^[A-Za-z0-9]{20}$') || v.matches('^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$')); }
+    function text(v, max) { return v is string && v.size() <= max; }
+    function nullableText(v, max) { return v == null || text(v, max); }
+    function money(v) { return v is int && v >= 0 && v <= 1000000000; }
+    function nullableId(v) { return v == null || id(v); }
+    function membership(f) { return get(/databases/$(database)/documents/families/$(f)/memberships/$(uid())).data; }
+    function member(f) { return signedIn() && exists(/databases/$(database)/documents/families/$(f)/memberships/$(uid())); }
+    function adult(f) { return member(f) && membership(f).role in ['admin', 'adult']; }
+    function admin(f) { return member(f) && membership(f).role == 'admin' && get(/databases/$(database)/documents/families/$(f)).data.admin_uid == uid(); }
+    function ownName() { return get(/databases/$(database)/documents/users/$(uid())).data.name; }
+    function created(d) { return d.created_by == uid() && d.created_at == request.time && d.updated_by == uid() && d.updated_at == request.time; }
+    function updated(d) { return d.created_by == resource.data.created_by && d.created_at == resource.data.created_at && d.updated_by == uid() && d.updated_at == request.time; }
+    function stamp(d) { return (resource == null && created(d)) || (resource != null && updated(d)); }
+    function activeProfile(f, p) { return profileId(p) && get(/databases/$(database)/documents/families/$(f)/members/$(p)).data.deleted_at == null; }
+    function activeProfileAfter(f, p) { return profileId(p) && getAfter(/databases/$(database)/documents/families/$(f)/members/$(p)).data.deleted_at == null; }
+    function profiles(f, a) {
+      return a is list && a.size() <= 3 && a.toSet().size() == a.size()
+        && (a.size() < 1 || activeProfile(f, a[0]))
+        && (a.size() < 2 || activeProfile(f, a[1]))
+        && (a.size() < 3 || activeProfile(f, a[2]));
+    }
+    function strings(a, max, length) {
+      let n = a.size();
+      // RE2 limits each repetition to 1000, including a valid larger string bound.
+      let pattern = length <= 1000 ? '(?s)^.{0,' + string(length) + '}$' : '(?s)^.{0,1000}.{0,1000}.{0,1000}$';
+      return a is list && n <= max && max <= 20 && (length <= 1000 || length == 3000)
+        && (n < 1 || a[0].matches(pattern)) && (n < 2 || a[1].matches(pattern))
+        && (n < 3 || a[2].matches(pattern)) && (n < 4 || a[3].matches(pattern))
+        && (n < 5 || a[4].matches(pattern)) && (n < 6 || a[5].matches(pattern))
+        && (n < 7 || a[6].matches(pattern)) && (n < 8 || a[7].matches(pattern))
+        && (n < 9 || a[8].matches(pattern)) && (n < 10 || a[9].matches(pattern))
+        && (n <= 10 || ((n < 11 || a[10].matches(pattern)) && (n < 12 || a[11].matches(pattern))
+          && (n < 13 || a[12].matches(pattern)) && (n < 14 || a[13].matches(pattern))
+          && (n < 15 || a[14].matches(pattern)) && (n < 16 || a[15].matches(pattern))
+          && (n < 17 || a[16].matches(pattern)) && (n < 18 || a[17].matches(pattern))
+          && (n < 19 || a[18].matches(pattern)) && (n < 20 || a[19].matches(pattern))));
+    }
+    function clock(v) { return v is string && v.matches('^([01][0-9]|2[0-3]):[0-5][0-9]$'); }
+    function localDate(v) {
+      let p = v.split('-');
+      let t = timestamp.date(int(p[0]), int(p[1]), int(p[2]));
+      return v.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$') && int(p[0]) >= 1 && t.year() == int(p[0]) && t.month() == int(p[1]) && t.day() == int(p[2]);
+    }
+    function lastSunday(y, m) {
+      let end = timestamp.date(y, m, 31);
+      let sunday = timestamp.date(2026, 10, 4).dayOfWeek();
+      return 31 - ((end.dayOfWeek() - sunday + 7) % 7);
+    }
+    function madridOffset(y, m, d, h) {
+      let last = m == 3 || m == 10 ? lastSunday(y, m) : 0;
+      return (m > 3 && m < 10) || (m == 3 && (d > last || (d == last && h >= 3)))
+        || (m == 10 && (d < last || (d == last && h < 3))) ? 2 : 1;
+    }
+    function madridDue(v, at) {
+      let parts = v.split('T');
+      let date = parts[0].split('-');
+      let y = int(date[0]);
+      let m = int(date[1]);
+      let d = int(date[2]);
+      let time = parts.size() == 2 ? parts[1].split(':') : ['23', '59'];
+      let h = int(time[0]);
+      let minutes = int(time[1]);
+      let offset = madridOffset(y, m, d, h);
+      let expected = timestamp.date(y, m, d) + duration.value(h - offset, 'h') + duration.value(minutes, 'm') + (parts.size() == 1 ? duration.value(59999, 'ms') : duration.value(0, 'ms'));
+      return v.matches('^20[0-9]{2}-[0-9]{2}-[0-9]{2}(T([01][0-9]|2[0-3]):[0-5][0-9])?$')
+        && localDate(parts[0]) && (parts.size() == 1 || (parts.size() == 2 && clock(parts[1])))
+        && !(m == 3 && d == lastSunday(y, 3) && h == 2) && at is timestamp && at == expected;
+    }
+    function due(v, at) { return (v == null && at == null) || (v is string && madridDue(v, at)); }
+    function localDateTime(v) { return v is string && v.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}T([01][0-9]|2[0-3]):[0-5][0-9](:[0-5][0-9]\\.[0-9]{3})?$') && localDate(v.split('T')[0]); }
+
+    match /users/{userId} {
+      function userData(d) {
+        return d.keys().hasAll(['name', 'email', 'language', 'week_start_day', 'dashboard_prefs', 'active_family_id', 'created_at', 'updated_at'])
+          && d.keys().hasOnly(['name', 'email', 'language', 'week_start_day', 'dashboard_prefs', 'active_family_id', 'created_at', 'updated_at'])
+          && text(d.name, 100) && d.name.size() > 0 && d.email == request.auth.token.email
+          && d.language in ['es', 'en', 'fr', 'pt', 'ru', 'zh'] && d.week_start_day in [null, 1, 2, 3, 4, 5, 6, 7]
+          && d.dashboard_prefs is map && d.dashboard_prefs.keys().hasOnly(['hidden', 'order', 'agendaView'])
+          && strings(d.dashboard_prefs.get('hidden', []), 5, 50) && strings(d.dashboard_prefs.get('order', []), 5, 50)
+          && d.dashboard_prefs.get('hidden', []).toSet().hasOnly(['stats', 'agenda', 'planning', 'quick', 'notes'])
+          && d.dashboard_prefs.get('order', []).toSet().hasOnly(['stats', 'agenda', 'planning', 'quick', 'notes'])
+          && d.dashboard_prefs.get('agendaView', 'day') in ['day', 'week']
+          && (d.active_family_id == null || (id(d.active_family_id) && existsAfter(/databases/$(database)/documents/families/$(d.active_family_id)/memberships/$(userId))))
+          && d.updated_at == request.time;
+      }
+      allow get: if signedIn() && uid() == userId;
+      allow list, delete: if false;
+      allow create: if signedIn() && uid() == userId && userData(request.resource.data) && request.resource.data.created_at == request.time;
+      allow update: if signedIn() && uid() == userId && userData(request.resource.data)
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['name', 'language', 'week_start_day', 'dashboard_prefs', 'active_family_id', 'updated_at']);
+      match /notifications/{notificationId} {
+        allow get: if signedIn() && uid() == userId;
+        allow list: if signedIn() && uid() == userId && bounded();
+        allow write: if false;
+      }
+    }
+
+    match /families/{f} {
+      function familyData(d) {
+        return d.keys().hasAll(['name', 'timezone', 'currency', 'admin_uid', 'disabled_modules', 'created_by', 'created_at', 'updated_by', 'updated_at'])
+          && d.keys().hasOnly(['name', 'timezone', 'currency', 'admin_uid', 'disabled_modules', 'created_by', 'created_at', 'updated_by', 'updated_at'])
+          && text(d.name, 100) && d.name.size() > 0 && d.timezone == 'Europe/Madrid' && d.currency == 'EUR'
+          && text(d.admin_uid, 128) && strings(d.disabled_modules, 20, 50)
+          && d.disabled_modules.toSet().hasOnly(['budget', 'rewards', 'meals', 'recipes', 'planning', 'integrations', 'kiosk', 'notes', 'ai']);
+      }
+      allow get: if member(f);
+      allow list, delete: if false;
+      allow create: if signedIn() && id(f) && familyData(request.resource.data) && created(request.resource.data)
+        && request.resource.data.admin_uid == uid()
+        && getAfter(/databases/$(database)/documents/families/$(f)/memberships/$(uid())).data.role == 'admin';
+      allow update: if adult(f) && familyData(request.resource.data) && updated(request.resource.data)
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['name', 'disabled_modules', 'admin_uid', 'updated_by', 'updated_at'])
+        && (request.resource.data.admin_uid == resource.data.admin_uid || (admin(f)
+          && getAfter(/databases/$(database)/documents/families/$(f)/memberships/$(request.resource.data.admin_uid)).data.role == 'admin'
+          && getAfter(/databases/$(database)/documents/families/$(f)/memberships/$(uid())).data.role == 'adult'));
+
+      match /memberships/{account} {
+        function shape(d) {
+          return d.keys().hasAll(['role', 'member_id', 'name', 'email', 'joined_at', 'invite_id'])
+            && d.keys().hasOnly(['role', 'member_id', 'name', 'email', 'joined_at', 'invite_id'])
+            && d.role in ['admin', 'adult', 'child'] && (d.member_id == null || profileId(d.member_id))
+            && text(d.name, 100) && text(d.email, 254) && d.joined_at is timestamp && nullableText(d.invite_id, 128);
+        }
+        function linked(d) {
+          return d.member_id == null || (activeProfileAfter(f, d.member_id)
+            && getAfter(/databases/$(database)/documents/families/$(f)/members/$(d.member_id)).data.linked_user_id == account);
+        }
+        function join(d) {
+          let invite = get(/databases/$(database)/documents/families/$(f)/invitations/$(d.invite_id)).data;
+          let after = getAfter(/databases/$(database)/documents/families/$(f)/invitations/$(d.invite_id)).data;
+          return d.role == invite.role && invite.used_by == null && invite.expires_at > request.time
+            && (invite.member_id == null || d.member_id == invite.member_id)
+            && after.used_by == account && after.used_at == request.time
+            && (invite.email == null || (request.auth.token.email_verified == true && request.auth.token.email == invite.email));
+        }
+        allow get: if member(f) || (signedIn() && account == uid());
+        allow list: if member(f) && bounded();
+        allow create: if signedIn() && account == uid() && shape(request.resource.data) && linked(request.resource.data)
+          && request.resource.data.name == ownName() && request.resource.data.email == request.auth.token.email && request.resource.data.joined_at == request.time
+          && ((!exists(/databases/$(database)/documents/families/$(f)) && request.resource.data.role == 'admin' && request.resource.data.invite_id == null
+            && getAfter(/databases/$(database)/documents/families/$(f)).data.created_by == uid()
+            && getAfter(/databases/$(database)/documents/families/$(f)).data.admin_uid == uid())
+          || (exists(/databases/$(database)/documents/families/$(f)) && request.resource.data.invite_id is string && join(request.resource.data)));
+        allow update: if admin(f) && shape(request.resource.data) && linked(request.resource.data)
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['role', 'member_id'])
+          && (request.resource.data.member_id == resource.data.member_id || resource.data.member_id == null
+            || getAfter(/databases/$(database)/documents/families/$(f)/members/$(resource.data.member_id)).data.linked_user_id == null)
+          && ((request.resource.data.role in ['adult', 'child'] && resource.data.role in ['adult', 'child'])
+            || (account == uid() && resource.data.role == 'admin' && request.resource.data.role == 'adult'
+              && getAfter(/databases/$(database)/documents/families/$(f)).data.admin_uid != uid())
+            || (resource.data.role == 'adult' && request.resource.data.role == 'admin'
+              && getAfter(/databases/$(database)/documents/families/$(f)).data.admin_uid == account));
+        allow delete: if signedIn() && resource.data.role != 'admin' && (account == uid() || admin(f))
+          && (resource.data.member_id == null || getAfter(/databases/$(database)/documents/families/$(f)/members/$(resource.data.member_id)).data.linked_user_id == null);
+      }
+
+      match /invitations/{invitation} {
+        function invitationData(d) {
+          return d.keys().hasAll(['role', 'member_id', 'email', 'expires_at', 'used_by', 'used_at', 'created_by', 'created_at', 'owner_name'])
+            && d.keys().hasOnly(['role', 'member_id', 'email', 'expires_at', 'used_by', 'used_at', 'created_by', 'created_at', 'owner_name'])
+            && d.role in ['adult', 'child'] && (d.member_id == null || (activeProfile(f, d.member_id)
+              && get(/databases/$(database)/documents/families/$(f)/members/$(d.member_id)).data.linked_user_id == null))
+            && nullableText(d.email, 254) && d.expires_at is timestamp && text(d.owner_name, 100);
+        }
+        allow get: if signedIn() && invitation.matches('^[A-Za-z0-9_-]{32,128}$');
+        allow list: if admin(f) && bounded();
+        allow create: if admin(f) && invitation.matches('^[A-Za-z0-9_-]{32,128}$') && invitationData(request.resource.data)
+          && request.resource.data.created_by == uid() && request.resource.data.created_at == request.time && request.resource.data.owner_name == ownName()
+          && request.resource.data.expires_at > request.time && request.resource.data.expires_at <= request.time + duration.value(7, 'd')
+          && request.resource.data.used_by == null && request.resource.data.used_at == null;
+        allow update: if signedIn() && resource.data.used_by == null && resource.data.expires_at > request.time
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['used_by', 'used_at'])
+          && request.resource.data.used_by == uid() && request.resource.data.used_at == request.time
+          && !exists(/databases/$(database)/documents/families/$(f)/memberships/$(uid()))
+          && getAfter(/databases/$(database)/documents/families/$(f)/memberships/$(uid())).data.invite_id == invitation
+          && getAfter(/databases/$(database)/documents/families/$(f)/memberships/$(uid())).data.role == resource.data.role
+          && (resource.data.email == null || (request.auth.token.email_verified == true && request.auth.token.email == resource.data.email));
+        allow delete: if false;
+      }
+
+      match /members/{p} {
+        function shape(d) {
+          return d.keys().hasAll(['name', 'color', 'role', 'linked_user_id', 'deleted_at', 'created_by', 'created_at', 'updated_by', 'updated_at'])
+            && d.keys().hasOnly(['name', 'color', 'role', 'linked_user_id', 'deleted_at', 'created_by', 'created_at', 'updated_by', 'updated_at'])
+            && text(d.name, 100) && d.name.size() > 0 && d.color.matches('^#[0-9a-fA-F]{6}$') && text(d.role, 50)
+            && nullableText(d.linked_user_id, 128) && (d.deleted_at == null || d.deleted_at is timestamp);
+        }
+        function linked(d) {
+          return d.linked_user_id == null || getAfter(/databases/$(database)/documents/families/$(f)/memberships/$(d.linked_user_id)).data.member_id == p;
+        }
+        function selfJoin(d) {
+          return d.linked_user_id == uid() && !exists(/databases/$(database)/documents/families/$(f)/memberships/$(uid()))
+            && getAfter(/databases/$(database)/documents/families/$(f)/memberships/$(uid())).data.member_id == p;
+        }
+        function inviteLink(d) {
+          let m = getAfter(/databases/$(database)/documents/families/$(f)/memberships/$(uid())).data;
+          let invite = get(/databases/$(database)/documents/families/$(f)/invitations/$(m.invite_id)).data;
+          return selfJoin(d) && resource.data.linked_user_id == null && resource.data.deleted_at == null
+            && invite.member_id == p && invite.used_by == null && invite.expires_at > request.time
+            && getAfter(/databases/$(database)/documents/families/$(f)/invitations/$(m.invite_id)).data.used_by == uid()
+            && d.diff(resource.data).affectedKeys().hasOnly(['linked_user_id', 'updated_by', 'updated_at']);
+        }
+        function selfLeave(d) {
+          return resource.data.linked_user_id == uid() && d.linked_user_id == null
+            && !existsAfter(/databases/$(database)/documents/families/$(f)/memberships/$(uid()))
+            && d.diff(resource.data).affectedKeys().hasOnly(['linked_user_id', 'updated_by', 'updated_at']);
+        }
+        allow get: if member(f);
+        allow list: if member(f) && bounded();
+        allow create: if signedIn() && profileId(p) && shape(request.resource.data) && created(request.resource.data)
+          && request.resource.data.deleted_at == null && linked(request.resource.data)
+          && ((adult(f) && request.resource.data.linked_user_id == null) || selfJoin(request.resource.data));
+        allow update: if signedIn() && resource.data.deleted_at == null && shape(request.resource.data) && updated(request.resource.data) && linked(request.resource.data)
+          && ((adult(f) && (request.resource.data.linked_user_id == resource.data.linked_user_id || (admin(f)
+            && (resource.data.linked_user_id == null || !existsAfter(/databases/$(database)/documents/families/$(f)/memberships/$(resource.data.linked_user_id))
+              || getAfter(/databases/$(database)/documents/families/$(f)/memberships/$(resource.data.linked_user_id)).data.member_id != p)))
+          && (request.resource.data.deleted_at == resource.data.deleted_at || (resource.data.deleted_at == null
+            && request.resource.data.deleted_at == request.time && request.resource.data.linked_user_id == null)))
+            || inviteLink(request.resource.data) || selfLeave(request.resource.data));
+        allow delete: if false;
+      }
+
+      match /privateProfiles/{p} {
+        function shape(d) {
+          return d.keys().hasOnly(['birthdate', 'allergies', 'medications', 'emergency_contact_name', 'emergency_contact_phone', 'notes', 'monthly_income_cents', 'created_by', 'created_at', 'updated_by', 'updated_at'])
+            && (d.get('birthdate', null) == null || localDate(d.birthdate))
+            && strings(d.get('allergies', []), 20, 200) && strings(d.get('medications', []), 20, 200)
+            && nullableText(d.get('emergency_contact_name', null), 100) && nullableText(d.get('emergency_contact_phone', null), 50)
+            && nullableText(d.get('notes', null), 2000) && money(d.get('monthly_income_cents', 0));
+        }
+        allow get: if adult(f);
+        allow list: if adult(f) && bounded();
+        allow create, update: if adult(f) && activeProfileAfter(f, p) && shape(request.resource.data) && stamp(request.resource.data);
+        allow delete: if false;
+      }
+
+      function eligible(t) { return !t.is_completed && t.deleted_at == null && t.due_at is timestamp && t.due_at < request.time && t.penalty_amount_cents in [500, 1000] && t.assigned_to.size() > 0; }
+      function penaltyKey(task, occurrence, p) { return task + '_' + occurrence + '_' + p; }
+      function snapshot(d, t, task, p) {
+        let profile = get(/databases/$(database)/documents/families/$(f)/members/$(p)).data;
+        return d.task_id == task && d.occurrence_id == t.occurrence_id && d.member_id == p
+          && d.task_title == t.title && d.member_name == profile.name && d.member_color == profile.color
+          && d.due_date == t.due_date && d.due_at == t.due_at && d.amount_cents == t.penalty_amount_cents;
+      }
+      function preservedOne(t, task, p) {
+        // Every proposal's create rule validates the ORIGINAL task snapshot. Immutable
+        // deterministic keys plus fresh creation avoid both duplicate reads and ID reuse.
+        let path = /databases/$(database)/documents/families/$(f)/penalties/$(penaltyKey(task, t.occurrence_id, p));
+        return !exists(path) && existsAfter(path);
+      }
+      function preserved(t, task) {
+        let economic = eligible(t);
+        return t.penalty_generated || (!economic && !request.resource.data.penalty_generated) || (economic && request.resource.data.penalty_generated && ((t.assigned_to.size() < 1 || preservedOne(t, task, t.assigned_to[0]))
+          && (t.assigned_to.size() < 2 || preservedOne(t, task, t.assigned_to[1]))
+          && (t.assigned_to.size() < 3 || preservedOne(t, task, t.assigned_to[2]))));
+      }
+      match /tasks/{task} {
+        function shape(d) {
+          return d.keys().hasAll(['title', 'description', 'category', 'priority', 'assigned_to', 'due_date', 'due_at', 'frequency', 'occurrence_id', 'penalty_generated', 'is_completed', 'recipe_id', 'penalty_amount_cents', 'created_by', 'created_at', 'completed_by', 'completed_at', 'updated_by', 'updated_at', 'deleted_at'])
+            && d.keys().hasOnly(['title', 'description', 'category', 'priority', 'assigned_to', 'due_date', 'due_at', 'frequency', 'occurrence_id', 'penalty_generated', 'is_completed', 'recipe_id', 'penalty_amount_cents', 'created_by', 'created_at', 'completed_by', 'completed_at', 'updated_by', 'updated_at', 'deleted_at'])
+            && text(d.title, 200) && d.title.size() > 0 && text(d.description, 5000) && text(d.category, 50)
+            && d.priority in ['low', 'medium', 'high'] && d.frequency in ['none', 'daily', 'weekly', 'monthly', 'annual']
+            && id(d.occurrence_id) && d.assigned_to is list && d.assigned_to.size() <= 3 && d.assigned_to.toSet().size() == d.assigned_to.size()
+            && d.penalty_generated is bool && d.is_completed is bool && nullableId(d.recipe_id) && d.penalty_amount_cents is int && d.penalty_amount_cents in [0, 500, 1000]
+            && due(d.due_date, d.due_at)
+            && (d.deleted_at == null || d.deleted_at is timestamp)
+            && ((d.is_completed && d.completed_by is string && d.completed_at is timestamp) || (!d.is_completed && d.completed_by == null && d.completed_at == null));
+        }
+        function references(d) {
+          return (resource != null && d.occurrence_id == resource.data.occurrence_id && d.assigned_to == resource.data.assigned_to || profiles(f, d.assigned_to))
+            && (d.recipe_id == null || (resource != null && d.recipe_id == resource.data.recipe_id)
+              || get(/databases/$(database)/documents/families/$(f)/recipes/$(d.recipe_id)).data.deleted_at == null);
+        }
+        function editShape(d) {
+          let changed = d.diff(resource.data).affectedKeys();
+          return changed.hasOnly(['title', 'description', 'category', 'priority', 'assigned_to', 'due_date', 'due_at', 'frequency', 'occurrence_id', 'penalty_generated', 'is_completed', 'recipe_id', 'penalty_amount_cents', 'completed_by', 'completed_at', 'updated_by', 'updated_at', 'deleted_at'])
+            && d.keys().hasAll(resource.data.keys())
+            && (!changed.hasAny(['title']) || (text(d.title, 200) && d.title.size() > 0))
+            && (!changed.hasAny(['description']) || text(d.description, 5000))
+            && (!changed.hasAny(['category']) || text(d.category, 50))
+            && (!changed.hasAny(['priority']) || d.priority in ['low', 'medium', 'high'])
+            && (!changed.hasAny(['frequency']) || d.frequency in ['none', 'daily', 'weekly', 'monthly', 'annual'])
+            && (!changed.hasAny(['occurrence_id']) || id(d.occurrence_id))
+            && (!changed.hasAny(['assigned_to']) || (d.assigned_to is list && d.assigned_to.size() <= 3 && d.assigned_to.toSet().size() == d.assigned_to.size()))
+            && (!changed.hasAny(['recipe_id']) || nullableId(d.recipe_id))
+            && (!changed.hasAny(['penalty_amount_cents']) || (d.penalty_amount_cents is int && d.penalty_amount_cents in [0, 500, 1000]))
+            && (!changed.hasAny(['due_date', 'due_at']) || due(d.due_date, d.due_at))
+            && d.penalty_generated is bool && d.is_completed is bool
+            && ((d.is_completed && d.completed_by is string && d.completed_at is timestamp) || (!d.is_completed && d.completed_by == null && d.completed_at == null));
+        }
+        function completion(d) {
+          return (d.is_completed == resource.data.is_completed && d.completed_by == resource.data.completed_by && d.completed_at == resource.data.completed_at)
+            || (!resource.data.is_completed && d.is_completed && d.completed_by == uid() && d.completed_at == request.time)
+            || (adult(f) && !d.is_completed && d.completed_by == null && d.completed_at == null);
+        }
+        function occurrence(d) {
+          return (d.occurrence_id == resource.data.occurrence_id && completion(d)
+            && (d.penalty_generated == resource.data.penalty_generated || (!resource.data.penalty_generated && d.penalty_generated)))
+            || (adult(f) && resource.data.is_completed && resource.data.deleted_at == null && resource.data.frequency != 'none'
+              && resource.data.due_at is timestamp && d.occurrence_id != resource.data.occurrence_id
+              && d.frequency == resource.data.frequency && d.due_at is timestamp && d.due_at > resource.data.due_at
+              && !d.is_completed && !d.penalty_generated && d.completed_by == null && d.completed_at == null && d.deleted_at == null);
+        }
+        allow get: if member(f);
+        allow list: if member(f) && bounded();
+        allow create: if adult(f) && id(task) && shape(request.resource.data) && created(request.resource.data) && references(request.resource.data)
+          && !request.resource.data.is_completed && !request.resource.data.penalty_generated && request.resource.data.deleted_at == null;
+        allow update: if member(f) && editShape(request.resource.data) && updated(request.resource.data) && references(request.resource.data)
+          && resource.data.deleted_at == null && occurrence(request.resource.data) && preserved(resource.data, task)
+          && (request.resource.data.deleted_at == null || request.resource.data.deleted_at == request.time)
+          && (adult(f) || (membership(f).role == 'child' && membership(f).member_id in resource.data.assigned_to
+            && !resource.data.is_completed && request.resource.data.is_completed
+            && request.resource.data.completed_by == uid() && request.resource.data.completed_at == request.time
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['is_completed', 'completed_by', 'completed_at', 'penalty_generated', 'updated_by', 'updated_at'])));
+        allow delete: if false;
+      }
+
+      match /penalties/{penalty} {
+        function shape(d) {
+          return d.keys().hasAll(['task_id', 'occurrence_id', 'member_id', 'task_title', 'member_name', 'member_color', 'due_date', 'due_at', 'amount_cents', 'status', 'generated_at', 'generated_by', 'reviewed_at', 'reviewed_by', 'reviewed_by_name', 'reason', 'paid_at', 'paid_by', 'paid_by_name', 'payment_reason'])
+            && d.keys().hasOnly(['task_id', 'occurrence_id', 'member_id', 'task_title', 'member_name', 'member_color', 'due_date', 'due_at', 'amount_cents', 'status', 'generated_at', 'generated_by', 'reviewed_at', 'reviewed_by', 'reviewed_by_name', 'reason', 'paid_at', 'paid_by', 'paid_by_name', 'payment_reason'])
+            && id(d.task_id) && id(d.occurrence_id) && profileId(d.member_id) && d.amount_cents is int && d.amount_cents in [500, 1000]
+            && text(d.reason, 500) && text(d.payment_reason, 500);
+        }
+        function proposal(d) {
+          let task = get(/databases/$(database)/documents/families/$(f)/tasks/$(d.task_id)).data;
+          let after = getAfter(/databases/$(database)/documents/families/$(f)/tasks/$(d.task_id)).data;
+          return eligible(task) && !task.penalty_generated && d.member_id in task.assigned_to
+            && snapshot(d, task, d.task_id, d.member_id) && penalty == penaltyKey(d.task_id, d.occurrence_id, d.member_id)
+            && after.penalty_generated && after.occurrence_id == task.occurrence_id
+            && (adult(f) || (membership(f).role == 'child' && membership(f).member_id in task.assigned_to))
+            && d.status == 'review' && d.generated_at == request.time && d.generated_by == uid()
+            && d.reviewed_at == null && d.reviewed_by == null && d.reviewed_by_name == null && d.reason == ''
+            && d.paid_at == null && d.paid_by == null && d.paid_by_name == null && d.payment_reason == '';
+        }
+        function totalDelta(d, delta) {
+          let path = /databases/$(database)/documents/families/$(f)/penaltyTotals/$(d.member_id);
+          let old = exists(path) ? get(path).data.amount_cents : 0;
+          let after = getAfter(path).data;
+          return after.amount_cents == old + delta && after.last_penalty_id == penalty && after.updated_at == request.time;
+        }
+        function transition(d) {
+          return (resource.data.status == 'review' && d.status in ['pending', 'forgiven']
+            && d.diff(resource.data).affectedKeys().hasOnly(['status', 'reviewed_at', 'reviewed_by', 'reviewed_by_name', 'reason'])
+            && d.reviewed_at == request.time && d.reviewed_by == uid() && d.reviewed_by_name == ownName()
+            && (d.status == 'forgiven' || totalDelta(d, d.amount_cents)))
+            || (resource.data.status == 'pending' && d.status == 'paid'
+              && d.diff(resource.data).affectedKeys().hasOnly(['status', 'paid_at', 'paid_by', 'paid_by_name', 'payment_reason'])
+              && d.paid_at == request.time && d.paid_by == uid() && d.paid_by_name == ownName() && totalDelta(d, -d.amount_cents));
+        }
+        allow get: if member(f);
+        allow list: if member(f) && bounded();
+        allow create: if member(f) && shape(request.resource.data) && proposal(request.resource.data);
+        allow update: if adult(f) && shape(request.resource.data) && transition(request.resource.data);
+        allow delete: if false;
+      }
+
+      match /penaltyTotals/{p} {
+        function total(d) {
+          let path = /databases/$(database)/documents/families/$(f)/penalties/$(d.last_penalty_id);
+          let before = get(path).data;
+          let after = getAfter(path).data;
+          let old = resource == null ? 0 : resource.data.amount_cents;
+          return d.keys().hasAll(['amount_cents', 'last_penalty_id', 'updated_at']) && d.keys().hasOnly(['amount_cents', 'last_penalty_id', 'updated_at'])
+            && money(d.amount_cents) && d.updated_at == request.time && before.member_id == p && after.member_id == p
+            && after.amount_cents == before.amount_cents
+            && ((before.status == 'review' && after.status == 'pending' && after.reviewed_by == uid() && after.reviewed_at == request.time && d.amount_cents == old + before.amount_cents)
+              || (before.status == 'pending' && after.status == 'paid' && after.paid_by == uid() && after.paid_at == request.time && d.amount_cents == old - before.amount_cents));
+        }
+        allow get: if member(f);
+        allow list: if member(f) && bounded();
+        allow create, update: if adult(f) && profileId(p) && total(request.resource.data);
+        allow delete: if false;
+      }
+
+      match /auditEvents/{event} {
+        function proof(d) {
+          let path = /databases/$(database)/documents/families/$(f)/penalties/$(d.entity_id);
+          let before = get(path).data;
+          let after = getAfter(path).data;
+          return (before.status == 'review' && after.status in ['pending', 'forgiven'] && d.action == 'penalty.' + after.status && after.reviewed_by == uid() && after.reviewed_at == request.time)
+            || (before.status == 'pending' && after.status == 'paid' && d.action == 'penalty.paid' && after.paid_by == uid() && after.paid_at == request.time);
+        }
+        allow get: if adult(f);
+        allow list: if adult(f) && bounded();
+        allow create: if adult(f) && request.resource.data.keys().hasAll(['actor_uid', 'action', 'entity_id', 'created_at'])
+          && request.resource.data.keys().hasOnly(['actor_uid', 'action', 'entity_id', 'created_at']) && request.resource.data.actor_uid == uid()
+          && request.resource.data.created_at == request.time && text(request.resource.data.entity_id, 400) && proof(request.resource.data);
+        allow update, delete: if false;
+      }
+
+      function recipe(d) {
+        return (resource == null || resource.data.deleted_at == null)
+          && d.keys().hasOnly(['name', 'description', 'ingredients', 'instructions', 'prep_time', 'cook_time', 'servings', 'difficulty', 'category', 'tags', 'image_url', 'deleted_at', 'created_by', 'created_at', 'updated_by', 'updated_at'])
+          && text(d.name, 200) && d.name.size() > 0 && nullableText(d.get('description', null), 5000)
+          && strings(d.ingredients, 20, 1000) && strings(d.instructions, 20, 3000)
+          && d.ingredients.size() + d.instructions.size() + d.tags.size() <= 30
+          && (d.prep_time == null || (d.prep_time is int && d.prep_time >= 0 && d.prep_time <= 10080))
+          && (d.cook_time == null || (d.cook_time is int && d.cook_time >= 0 && d.cook_time <= 10080))
+          && (d.get('servings', null) == null || (d.servings is int && d.servings >= 1 && d.servings <= 1000))
+          && d.get('difficulty', null) in [null, 'Facile', 'Moyen', 'Difficile'] && text(d.category, 50) && strings(d.tags, 20, 50)
+          && (d.get('image_url', null) == null || (text(d.image_url, 2000) && d.image_url.matches('^https://[^ ]+$')))
+          && ((resource == null && d.deleted_at == null) || (resource != null && (d.deleted_at == resource.data.deleted_at || (resource.data.deleted_at == null && d.deleted_at == request.time))));
+      }
+      function recipeRef(d) { return d.recipe_id == null || (resource != null && d.recipe_id == resource.data.recipe_id) || (id(d.recipe_id) && get(/databases/$(database)/documents/families/$(f)/recipes/$(d.recipe_id)).data.deleted_at == null); }
+      function profileRefs(d) { return (resource != null && d.family_member_ids == resource.data.family_member_ids) || profiles(f, d.family_member_ids); }
+      function shopping(d) {
+        return d.keys().hasOnly(['name', 'category', 'quantity', 'unit', 'price_cents', 'is_checked', 'notes', 'created_by', 'created_at', 'updated_by', 'updated_at'])
+          && text(d.name, 255) && d.name.size() > 0 && text(d.category, 50) && (d.quantity == null || (d.quantity is number && d.quantity > 0 && d.quantity <= 100000))
+          && nullableText(d.unit, 30) && (d.price_cents == null || money(d.price_cents)) && d.is_checked is bool && nullableText(d.get('notes', null), 2000);
+      }
+      function budget(d) {
+        return d.keys().hasOnly(['amount_cents', 'date', 'category', 'is_expense', 'description', 'assigned_to', 'created_by', 'created_at', 'updated_by', 'updated_at'])
+          && money(d.amount_cents) && localDate(d.date) && text(d.category, 50) && d.is_expense is bool && nullableText(d.description, 2000)
+          && (d.get('assigned_to', null) == null || (resource != null && d.assigned_to == resource.data.get('assigned_to', null)) || activeProfile(f, d.assigned_to));
+      }
+      function planning(d) {
+        let datePattern = '(20[0-9]{2}-((01|03|05|07|08|10|12)-(0[1-9]|[12][0-9]|3[01])|(04|06|09|11)-(0[1-9]|[12][0-9]|30)|02-(0[1-9]|1[0-9]|2[0-8]))|20([02468][048]|[13579][26])-02-29)';
+        return d.keys().hasOnly(['family_member_ids', 'day_of_week', 'specific_date', 'start_time', 'end_time', 'excluded_dates', 'title', 'schedule_type', 'location', 'notes', 'created_by', 'created_at', 'updated_by', 'updated_at'])
+          && profileRefs(d) && d.day_of_week is int && d.day_of_week >= 1 && d.day_of_week <= 7
+          && (d.specific_date == null || localDate(d.specific_date)) && clock(d.start_time) && clock(d.end_time) && d.end_time != d.start_time
+          && strings(d.excluded_dates, 20, 10) && d.excluded_dates.join(',').matches('^(' + datePattern + '(,' + datePattern + ')*)?$')
+          && text(d.title, 200) && d.schedule_type in ['work', 'school', 'study', 'activity', 'other']
+          && nullableText(d.get('location', null), 500) && nullableText(d.get('notes', null), 2000);
+      }
+      function meal(d) {
+        return d.keys().hasOnly(['date', 'meal_type', 'recipe_id', 'custom_meal', 'notes', 'created_by', 'created_at', 'updated_by', 'updated_at'])
+          && localDate(d.date) && d.meal_type in ['breakfast', 'combined'] && nullableId(d.recipe_id) && recipeRef(d)
+          && nullableText(d.custom_meal, 500) && nullableText(d.notes, 2000) && (d.recipe_id != null || (d.custom_meal != null && d.custom_meal.size() > 0));
+      }
+      function calendar(d) {
+        return d.keys().hasOnly(['title', 'start_time', 'end_time', 'family_member_ids', 'notes', 'description', 'location', 'color', 'is_all_day', 'reminder_minutes', 'recurrence_frequency', 'recurrence_interval', 'recurrence_until', 'created_by', 'created_at', 'updated_by', 'updated_at'])
+          && text(d.title, 200) && localDateTime(d.start_time) && (d.end_time == null || (localDateTime(d.end_time) && d.end_time >= d.start_time))
+          && profileRefs(d) && nullableText(d.notes, 2000) && nullableText(d.get('description', null), 5000) && nullableText(d.get('location', null), 500)
+          && d.get('color', '#123456').matches('^#[0-9a-fA-F]{6}$') && d.get('is_all_day', false) is bool
+          && reminders(d.get('reminder_minutes', [])) && d.get('recurrence_frequency', 'none') == 'none'
+          && d.get('recurrence_interval', 1) == 1 && d.get('recurrence_until', null) == null;
+      }
+      function note(d) {
+        return d.keys().hasOnly(['content', 'color', 'author_uid', 'author_name', 'expires_at', 'created_by', 'created_at', 'updated_by', 'updated_at'])
+          && text(d.content, 5000) && d.color in ['yellow', 'pink', 'blue', 'green', 'orange'] && d.author_uid == uid() && d.author_name == ownName()
+          && (d.expires_at == null || (d.expires_at is timestamp && d.expires_at > request.time))
+          && (resource == null || d.author_uid == resource.data.author_uid);
+      }
+      function reminder(v) { return v is int && v >= 0 && v <= 10080; }
+      function reminders(a) {
+        return a is list && a.size() <= 10 && a.toSet().size() == a.size()
+          && (a.size() < 1 || reminder(a[0])) && (a.size() < 2 || reminder(a[1])) && (a.size() < 3 || reminder(a[2]))
+          && (a.size() < 4 || reminder(a[3])) && (a.size() < 5 || reminder(a[4])) && (a.size() < 6 || reminder(a[5]))
+          && (a.size() < 7 || reminder(a[6])) && (a.size() < 8 || reminder(a[7])) && (a.size() < 9 || reminder(a[8])) && (a.size() < 10 || reminder(a[9]));
+      }
+      function templateItem(d) {
+        let quantity = d.quantity;
+        let unit = d.unit;
+        let price = d.get('price_cents', null);
+        let notes = d.get('notes', null);
+        return d is map && d.keys().hasAll(['name', 'category', 'quantity', 'unit'])
+          && d.keys().hasOnly(['name', 'category', 'quantity', 'unit', 'price_cents', 'notes', 'is_checked'])
+          && d.name.matches('(?s)^.{0,255}$') && d.category.matches('(?s)^.{0,50}$')
+          && (quantity == null || (quantity is number && quantity > 0 && quantity <= 100000))
+          && (unit == null || unit.matches('(?s)^.{0,30}$')) && (price == null || money(price))
+          && (notes == null || text(notes, 2000)) && d.get('is_checked', false) is bool;
+      }
+      function template(d) {
+        let a = d.items;
+        return d.keys().hasOnly(['name', 'items', 'created_by', 'created_at', 'updated_by', 'updated_at']) && text(d.name, 200) && a is list && a.size() <= 5
+          && (a.size() < 1 || templateItem(a[0])) && (a.size() < 2 || templateItem(a[1])) && (a.size() < 3 || templateItem(a[2]))
+          && (a.size() < 4 || templateItem(a[3])) && (a.size() < 5 || templateItem(a[4]));
+      }
+      function limitData(d) { return d.keys().hasOnly(['category', 'monthly_limit_cents', 'month', 'year', 'created_by', 'created_at', 'updated_by', 'updated_at']) && text(d.category, 50) && money(d.monthly_limit_cents) && d.month is int && d.month >= 1 && d.month <= 12 && d.year is int && d.year >= 1900 && d.year <= 9999; }
+      function recurring(d) {
+        return d.keys().hasOnly(['label', 'category', 'amount_cents', 'is_expense', 'start_date', 'recurrence_frequency', 'recurrence_interval', 'recurrence_until', 'is_active', 'created_by', 'created_at', 'updated_by', 'updated_at'])
+          && text(d.label, 200) && text(d.category, 50) && money(d.amount_cents) && d.amount_cents > 0 && d.is_expense is bool
+          && localDate(d.start_date) && d.recurrence_frequency in ['daily', 'weekly', 'monthly', 'yearly']
+          && d.recurrence_interval is int && d.recurrence_interval >= 1 && d.recurrence_interval <= 365
+          && (d.recurrence_until == null || (localDate(d.recurrence_until) && d.recurrence_until >= d.start_date)) && d.is_active is bool;
+      }
+      function monthData(d) { return d.keys().hasOnly(['month', 'year', 'savings_goal_cents', 'notes', 'created_by', 'created_at', 'updated_by', 'updated_at']) && d.month is int && d.month >= 1 && d.month <= 12 && d.year is int && d.year >= 1900 && d.year <= 9999 && money(d.savings_goal_cents) && nullableText(d.notes, 5000); }
+      function moduleData(c, d) {
+        return (c == 'recipes' && recipe(d)) || (c == 'planningEntries' && planning(d)) || (c == 'mealPlans' && meal(d))
+          || (c == 'shoppingItems' && shopping(d)) || (c == 'calendarEvents' && calendar(d)) || (c == 'notes' && note(d))
+          || (c == 'budgetEntries' && budget(d)) || (c == 'shoppingTemplates' && template(d)) || (c == 'budgetLimits' && limitData(d))
+          || (c == 'budgetRecurring' && recurring(d)) || (c == 'kakeiboMonths' && monthData(d));
+      }
+      function publicModule(c) { return c in ['recipes', 'planningEntries', 'mealPlans', 'shoppingItems', 'calendarEvents', 'notes', 'shoppingTemplates']; }
+      function privateModule(c) { return c in ['budgetEntries', 'budgetLimits', 'budgetRecurring', 'kakeiboMonths']; }
+      match /{collection}/{document} {
+        allow get: if (publicModule(collection) && member(f)) || (privateModule(collection) && adult(f));
+        allow list: if bounded() && ((publicModule(collection) && member(f)) || (privateModule(collection) && adult(f)));
+        allow create, update: if (publicModule(collection) || privateModule(collection)) && adult(f) && id(document)
+          && stamp(request.resource.data) && moduleData(collection, request.resource.data);
+        allow delete: if adult(f) && collection in ['planningEntries', 'mealPlans', 'shoppingItems', 'calendarEvents', 'notes', 'budgetEntries', 'shoppingTemplates', 'budgetLimits', 'budgetRecurring', 'kakeiboMonths'];
+      }
+      match /settings/{setting} {
+        allow get: if (member(f) && setting == 'categories') || (adult(f) && setting == 'kakeibo');
+        allow list: if adult(f) && bounded();
+        allow create, update: if adult(f) && stamp(request.resource.data)
+          && ((setting == 'categories' && request.resource.data.keys().hasOnly(['recipe', 'shopping', 'budget', 'created_by', 'created_at', 'updated_by', 'updated_at'])
+          && request.resource.data.recipe.size() + request.resource.data.shopping.size() + request.resource.data.budget.size() <= 40
+          && strings(request.resource.data.recipe, 20, 50)
+          && strings(request.resource.data.shopping, 20, 50) && strings(request.resource.data.budget, 20, 50))
+          || (setting == 'kakeibo' && request.resource.data.keys().hasOnly(['mapping', 'created_by', 'created_at', 'updated_by', 'updated_at'])
+            && request.resource.data.mapping is map && strings(request.resource.data.mapping.keys(), 20, 50)
+            && request.resource.data.mapping.values().toSet().hasOnly(['survival', 'wants', 'culture', 'extra'])));
+        allow delete: if false;
+      }
+    }
+    match /{document=**} { allow read, write: if false; }
+  }
+}

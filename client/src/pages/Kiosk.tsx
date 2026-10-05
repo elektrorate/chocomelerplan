@@ -409,7 +409,7 @@ const Kiosk: React.FC = () => {
                 )}
 
                 <div className="flex items-center gap-2">
-                    <img src={`${import.meta.env.BASE_URL}OpenFamily.png`} alt="OpenFamily" className="hidden h-10 w-10 object-contain sm:block" />
+                    <img src={`${import.meta.env.BASE_URL}chocomelerplan-logo.png`} alt="chocomelerplan" className="hidden h-10 w-10 object-contain sm:block" />
                     <button
                         type="button"
                         onClick={() => setSettingsOpen(true)}

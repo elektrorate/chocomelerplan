@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { api } from '../lib/api';
+import { IS_FIREBASE } from '../lib/firebase/config';
 import { Download, Upload, CheckCircle, AlertCircle, Loader2, Bell, BellOff, Globe, Languages, Camera, Trash2, MonitorPlay, Sparkles, LayoutGrid, Server, Tags, ArrowUp, ArrowDown, Plus, Heart, Star } from 'lucide-react';
 import { Card, CardContent, Button, Input, Select } from '../components/ui';
 import { LanguageSwitcher } from '../components/ui/LanguageSwitcher';
@@ -423,7 +424,7 @@ const ModulesCard: React.FC<{ isParent: boolean }> = ({ isParent }) => {
                         )}
 
                         <div className="mt-4 space-y-2">
-                            {MODULE_DEFINITIONS.map((mod) => {
+                            {MODULE_DEFINITIONS.filter(mod => !IS_FIREBASE || !['ai', 'integrations'].includes(mod.key)).map((mod) => {
                                 const enabled = !disabledModules.includes(mod.key);
                                 return (
                                     <label
@@ -506,6 +507,10 @@ const CategoriesCard: React.FC<{ isParent: boolean }> = ({ isParent }) => {
     const addRow = () => {
         const name = newName.trim();
         if (!name) return;
+        if (IS_FIREBASE && (rows.length >= 20 || rows.length + CATEGORY_MODULES.filter(key => key !== module).reduce((total, key) => total + categories[key].length, 0) >= 40 || name.length > 50)) {
+            setError('Spark admite 20 categorías por lista, 40 entre todas y 50 caracteres por nombre.');
+            return;
+        }
         if (rows.some((r) => r.value.trim() === name)) {
             setError(t('categories:errors.duplicate', { name }));
             return;
@@ -522,6 +527,10 @@ const CategoriesCard: React.FC<{ isParent: boolean }> = ({ isParent }) => {
         const list = rows.map((r) => (r.touched || !r.original ? r.value.trim() : r.original));
         if (list.some((v) => v.length === 0)) { setError(t('categories:errors.empty')); return; }
         if (list.length === 0) { setError(t('categories:errors.atLeastOne')); return; }
+        if (IS_FIREBASE && (list.length > 20 || list.length + CATEGORY_MODULES.filter(key => key !== module).reduce((total, key) => total + categories[key].length, 0) > 40 || list.some(name => name.length > 50))) {
+            setError('Spark admite 20 categorías por lista, 40 entre todas y 50 caracteres por nombre.');
+            return;
+        }
         const seen = new Set<string>();
         for (const name of list) {
             if (seen.has(name)) { setError(t('categories:errors.duplicate', { name })); return; }
@@ -563,7 +572,7 @@ const CategoriesCard: React.FC<{ isParent: boolean }> = ({ isParent }) => {
                     </div>
                     <div className="flex-1">
                         <h3 className="text-caption font-semibold text-foreground">{t('categories:title')}</h3>
-                        <p className="mt-1 text-micro text-muted-foreground">{t('categories:subtitle')}</p>
+                        <p className="mt-1 text-micro text-muted-foreground">{IS_FIREBASE ? 'Spark permite añadir y ordenar categorías: máximo 20 por lista, 40 en total y 50 caracteres por nombre. No permite renombrar ni eliminar categorías guardadas con propagación de cambios.' : t('categories:subtitle')}</p>
 
                         {!isParent && (
                             <p className="mt-3 flex items-center gap-1 text-micro text-muted-foreground">
@@ -592,7 +601,7 @@ const CategoriesCard: React.FC<{ isParent: boolean }> = ({ isParent }) => {
                                 <div key={`${row.original ?? 'new'}-${index}`} className="flex items-center gap-2">
                                     <Input
                                         value={row.value}
-                                        disabled={!isParent || saving}
+                                        disabled={!isParent || saving || (IS_FIREBASE && row.original !== null)}
                                         onChange={(e) => setRows((prev) => prev.map((r, i) => (i === index ? { ...r, value: e.target.value, touched: true } : r)))}
                                         className="flex-1"
                                     />
@@ -604,10 +613,10 @@ const CategoriesCard: React.FC<{ isParent: boolean }> = ({ isParent }) => {
                                         onClick={() => move(index, 1)} aria-label={t('categories:moveDown')}>
                                         <ArrowDown className="h-4 w-4" />
                                     </Button>
-                                    <Button type="button" variant="ghost" size="sm" disabled={!isParent || saving || rows.length <= 1}
+                                    {(!IS_FIREBASE || row.original === null) && <Button type="button" variant="ghost" size="sm" disabled={!isParent || saving || rows.length <= 1}
                                         onClick={() => setRows((prev) => prev.filter((_, i) => i !== index))} aria-label={t('categories:remove')}>
                                         <Trash2 className="h-4 w-4 text-destructive" />
-                                    </Button>
+                                    </Button>}
                                 </div>
                             ))}
                         </div>
@@ -629,7 +638,7 @@ const CategoriesCard: React.FC<{ isParent: boolean }> = ({ isParent }) => {
                             </div>
                         )}
 
-                        {fallback && (
+                        {!IS_FIREBASE && fallback && (
                             <p className="mt-3 text-micro text-muted-foreground">
                                 {t('categories:hintReassign', { fallback })}
                             </p>
@@ -685,10 +694,14 @@ const Settings: React.FC = () => {
     const avatarInputRef = useRef<HTMLInputElement>(null);
     const [avatarLoading, setAvatarLoading] = useState(false);
     const [avatarError, setAvatarError] = useState('');
+    const [profileName, setProfileName] = useState('');
+    const [profileSaving, setProfileSaving] = useState(false);
+    const [profileError, setProfileError] = useState('');
 
     const { user, updateCurrency, updateProfile } = useAuth();
     const { isSupported, permission, isSubscribed, isLoading: notifLoading, subscribe, unsubscribe } = useNotifications();
     const isParent = Boolean(user?.is_owner) || (user?.role ?? '').toLowerCase() !== 'enfant';
+    useEffect(() => { setProfileName(user?.name || ''); }, [user?.name]);
 
     const handleToggleNotifications = async () => {
         setNotifError('');
@@ -837,6 +850,7 @@ const Settings: React.FC = () => {
                 <h2 className="text-title font-bold text-foreground">{t('settings:title')}</h2>
                 <p className="text-caption text-muted-foreground">{t('settings:subtitle')}</p>
             </div>
+            {IS_FIREBASE && <p className="rounded-input border border-border bg-surface-2 px-4 py-3 text-caption text-muted-foreground">Firebase Spark: sin fotos ni almacenamiento de archivos, IA, integraciones, importación de datos, notificaciones push ni funciones avanzadas de Cloud. La moneda familiar es EUR y no se puede cambiar.</p>}
 
             {/* Language */}
             <Card>
@@ -858,7 +872,7 @@ const Settings: React.FC = () => {
             <RegionalPreferences />
 
             {/* Server (native app only) */}
-            {isNative() && (
+            {!IS_FIREBASE && isNative() && (
                 <Card>
                     <CardContent className="p-6">
                         <div className="flex items-start gap-4">
@@ -911,7 +925,7 @@ const Settings: React.FC = () => {
                 <CardContent className="p-6">
                     <div className="flex items-start gap-4">
                         <div className="relative shrink-0">
-                            {user?.avatar_url ? (
+                            {!IS_FIREBASE && user?.avatar_url ? (
                                 <img
                                     src={user.avatar_url}
                                     alt={user?.name || t('settings:profile.title')}
@@ -929,11 +943,28 @@ const Settings: React.FC = () => {
                             )}
                         </div>
                         <div className="flex-1">
-                            <h3 className="text-caption font-semibold text-foreground">{t('settings:profile.title')}</h3>
+                            <h3 className="text-caption font-semibold text-foreground">{IS_FIREBASE ? 'Perfil de la cuenta' : t('settings:profile.title')}</h3>
                             <p className="mt-1 text-micro text-muted-foreground">
-                                {t('settings:profile.subtitle')}
+                                {IS_FIREBASE ? 'Puedes actualizar tu nombre. Las fotos de perfil no están disponibles en Spark.' : t('settings:profile.subtitle')}
                             </p>
-                            <div className="mt-3 flex flex-wrap gap-2">
+                            {IS_FIREBASE && <form className="mt-3 space-y-3" onSubmit={async event => {
+                                event.preventDefault();
+                                if (profileSaving || !profileName.trim()) return;
+                                setProfileSaving(true);
+                                setProfileError('');
+                                try {
+                                    await updateProfile({ name: profileName.trim() });
+                                } catch (error) {
+                                    setProfileError(error instanceof Error ? error.message : 'No se pudo actualizar el nombre.');
+                                } finally {
+                                    setProfileSaving(false);
+                                }
+                            }}>
+                                <Input label="Nombre" value={profileName} onChange={event => setProfileName(event.target.value)} maxLength={100} required disabled={profileSaving} />
+                                {profileError && <p role="alert" className="text-caption text-danger">{profileError}</p>}
+                                <Button type="submit" size="sm" disabled={profileSaving || !profileName.trim() || profileName.trim() === user?.name}>{profileSaving ? 'Guardando...' : 'Guardar nombre'}</Button>
+                            </form>}
+                            {!IS_FIREBASE && <div className="mt-3 flex flex-wrap gap-2">
                                 <input
                                     ref={avatarInputRef}
                                     type="file"
@@ -962,7 +993,7 @@ const Settings: React.FC = () => {
                                         {t('settings:profile.remove')}
                                     </Button>
                                 )}
-                            </div>
+                            </div>}
                             {avatarError && (
                                 <p className="mt-2 flex items-center gap-1 text-micro text-destructive">
                                     <AlertCircle className="h-4 w-4" />
@@ -975,7 +1006,7 @@ const Settings: React.FC = () => {
             </Card>
 
             {/* Push Notifications */}
-            <Card>
+            {!IS_FIREBASE && <Card>
                 <CardContent className="p-6">
                     <div className="flex items-start gap-4">
                         <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-card bg-primary-soft text-primary">
@@ -1039,7 +1070,7 @@ const Settings: React.FC = () => {
                         </div>
                     </div>
                 </CardContent>
-            </Card>
+            </Card>}
 
             {/* Currency */}
             <Card>
@@ -1051,7 +1082,7 @@ const Settings: React.FC = () => {
                         <div className="flex-1">
                             <h3 className="text-caption font-semibold text-foreground">{t('settings:currency.title')}</h3>
                             <p className="mt-1 text-micro text-muted-foreground">
-                                {t('settings:currency.subtitle')}
+                                {IS_FIREBASE ? 'EUR · Euro. Moneda fija de la familia en Spark (solo lectura).' : t('settings:currency.subtitle')}
                             </p>
 
                             {currencyError && (
@@ -1061,7 +1092,7 @@ const Settings: React.FC = () => {
                                 </p>
                             )}
 
-                            <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-3">
+                            {!IS_FIREBASE && <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-3">
                                 {CURRENCIES.map((curr) => (
                                     <button
                                         key={curr.code}
@@ -1076,14 +1107,14 @@ const Settings: React.FC = () => {
                                         {curr.label}
                                     </button>
                                 ))}
-                            </div>
+                            </div>}
                         </div>
                     </div>
                 </CardContent>
             </Card>
 
             {/* AI assistant */}
-            <AiAssistantCard isParent={isParent} />
+            {!IS_FIREBASE && <AiAssistantCard isParent={isParent} />}
 
             {/* Optional modules */}
             <ModulesCard isParent={isParent} />
@@ -1092,7 +1123,7 @@ const Settings: React.FC = () => {
             <CategoriesCard isParent={isParent} />
 
             {/* Export */}
-            <Card>
+            {(!IS_FIREBASE || isParent) && <Card>
                 <CardContent className="p-6">
                     <div className="flex items-start gap-4">
                         <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-card bg-primary-soft text-primary">
@@ -1124,10 +1155,10 @@ const Settings: React.FC = () => {
                         </div>
                     </div>
                 </CardContent>
-            </Card>
+            </Card>}
 
             {/* Import */}
-            <Card>
+            {!IS_FIREBASE && <Card>
                 <CardContent className="p-6">
                     <div className="flex items-start gap-4">
                         <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-card bg-primary-soft text-primary">
@@ -1190,7 +1221,7 @@ const Settings: React.FC = () => {
                         </div>
                     </div>
                 </CardContent>
-            </Card>
+            </Card>}
 
             {/* Support the project — a passive link, never a prompt or a nag: this
                 app is self-hosted and must stay out of the user's way. */}

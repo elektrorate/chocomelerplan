@@ -13,7 +13,7 @@ import './index.css';
 
 // Demo (sub-path Pages) and the native app (no server-side routing) both use
 // HashRouter; the real web app keeps clean BrowserRouter URLs.
-const Router = import.meta.env.VITE_DEMO || isNative() ? HashRouter : BrowserRouter;
+const Router = import.meta.env.VITE_DEMO === 'true' || isNative() ? HashRouter : BrowserRouter;
 
 // Load the saved server URL (native only) before first render, then mount.
 // Deep links are wired up in parallel: they only ever navigate, so they do not

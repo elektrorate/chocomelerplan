@@ -14,6 +14,8 @@
         "check:i18n": "node scripts/check-i18n.mjs"
     },
     "dependencies": {
+        "firebase": "12.19.0",
+        "luxon": "^3.7.2",
         "@capacitor/android": "^8.4.1",
         "@capacitor/app": "^8.1.0",
         "@capacitor/core": "^8.4.1",
@@ -45,6 +47,7 @@
         "zod": "^3.22.4"
     },
     "devDependencies": {
+        "@types/luxon": "^3.7.1",
         "@babel/core": "^7.29.7",
         "@capacitor/cli": "^8.4.1",
         "@types/react": "^18.2.47",

@@ -2,7 +2,7 @@ import React from 'react';
 import { useTranslation } from 'react-i18next';
 import { Github, RotateCcw, Info } from 'lucide-react';
 
-const IS_DEMO = Boolean(import.meta.env.VITE_DEMO);
+const IS_DEMO = import.meta.env.VITE_DEMO === 'true';
 
 /** Thin banner shown only in the static GitHub Pages demo build. */
 export const DemoBanner: React.FC = () => {
